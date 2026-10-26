@@ -8,12 +8,15 @@ Author: John Hesch. Original code. Apple silicon, personal use.
 
 ## Commands
 
-- `probe` reads only: lists the charging keys that exist and their values, plus battery state.
-- `test [--sleep]` (root) stops charging, checks it, restores, then kills itself to prove a watchdog restores charging.
-- `restore` (root) puts the charge-inhibit keys back to "charging on".
+Phase 1 uses macOS's own built-in charge limit (the private PowerUI framework). No charging-chip key is written.
+No root needed: the tool talks to the user's own PowerUI service.
 
-Charging is left on by default. Every exit path (normal, Ctrl-C, terminate, kill) restores it; a separate
-watchdog process covers the ones that cannot be caught.
+- `probe` reads only: is the limit supported, on or off, which level, offered steps, battery state.
+- `test [pct] [--try89]` sets the limit (default 90), verifies it, restores, then kills itself to prove a watchdog restores it.
+- `restore` puts the limit back to off / 100.
+
+The setting is always put back: every exit path (normal, Ctrl-C, terminate) restores it; a separate watchdog process
+covers the ones that cannot be caught (kill -9).
 
 ## Building
 
