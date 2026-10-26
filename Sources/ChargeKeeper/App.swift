@@ -52,7 +52,11 @@ func registerLoginItemOnce() {
 
 final class Keeper: ObservableObject {
     @Published private(set) var snap = Snapshot()
-    @Published private(set) var anim = 0.0
+    // The icon is set straight on the menu-bar button (onIcon); only the open panel is a SwiftUI view, so `bar` is published only while it is open.
+    private(set) var anim = 0.0 { didSet { if panelOpen { bar = anim }; onIcon() } }
+    @Published private(set) var bar = 0.0
+    var onIcon: () -> Void = {}
+    private var panelOpen = false
     private var animTimer: Timer?  // exists only while the Mac is charging, Reduce Motion is off and a screen is awake
     private var screensAsleep = false
     private let limiter: Limiter?
@@ -64,6 +68,11 @@ final class Keeper: ObservableObject {
         let saved = UserDefaults.standard.integer(forKey: "limit")
         limit = saved == 0 ? 80 : clampLimit(saved)
         limiter = MCL().map(Limiter.init)
+        let nc = NSWorkspace.shared.notificationCenter
+        for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false)] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.screensAsleep = asleep; self?.refreshAnimation() }
+        }
+        nc.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.refreshAnimation() }
         if let l = limiter { installExitSafety(l) }
         registerLoginItemOnce()
         work.async { self.step() }  // the first step also cleans up a limit left by a crash or power cut (see Limiter.apply)
@@ -73,11 +82,6 @@ final class Keeper: ObservableObject {
             // to answer right after wake, so ask again a little later instead of waiting for the 30 s tick.
             for delay in wakeChecks { self.work.asyncAfter(deadline: .now() + delay) { self.step() } }
         }
-        let nc = NSWorkspace.shared.notificationCenter
-        for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false)] {
-            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.screensAsleep = asleep; self?.refreshAnimation() }
-        }
-        nc.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.refreshAnimation() }
     }
 
     // Work queue: read the battery, bring the Mac's limit in line with what is wanted, publish.
@@ -98,7 +102,7 @@ final class Keeper: ObservableObject {
             }
         }
         let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode)
-        DispatchQueue.main.async { self.snap = s; self.refreshAnimation() }
+        DispatchQueue.main.async { self.snap = s; self.refreshAnimation(); self.onIcon() }
     }
 
     // Main thread. The timer runs only while charging with a screen awake; any other state stops it and shows today's plain icon.
@@ -121,6 +125,7 @@ final class Keeper: ObservableObject {
         }
     }
 
+    func panel(open: Bool) { panelOpen = open; if open { bar = anim } }
     func setLimit(_ v: Int) { work.async { self.limit = clampLimit(v); UserDefaults.standard.set(self.limit, forKey: "limit"); self.step() } }
     func chargeToFullOnce() { work.async { self.fullOnce = true; self.step() } }
     func backToLimit() { work.async { self.fullOnce = false; self.step() } }
@@ -129,40 +134,63 @@ final class Keeper: ObservableObject {
 
 let wakeChecks: [TimeInterval] = [0, 5, 20]  // seconds after wake
 
-struct KeeperApp: App {  // started from main.swift
-    @StateObject private var keeper = Keeper()
-    var body: some Scene {
-        MenuBarExtra {
-            Panel(s: keeper.snap, bar: keeper.anim, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, quit: keeper.quit))
-        } label: {
-            MenuBarLabel(level: keeper.snap.level, fill: isCharging(keeper.snap) ? iconFill(keeper.anim) : nil)
-        }
-        .menuBarExtraStyle(.window)
+// The menu-bar item is a plain AppKit status item whose picture is swapped directly (a SwiftUI menu-bar item is copied
+// by macOS and re-run on every picture change, which cost about 28% CPU while charging). The panel is the same SwiftUI view in a popover.
+final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private var keeper: Keeper!
+    private var item: NSStatusItem!
+    private let popover = NSPopover()
+
+    func applicationDidFinishLaunching(_ n: Notification) {
+        keeper = Keeper()
+        keeper.onIcon = { [weak self] in self?.updateIcon() }
+        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.target = self
+        item.button?.action = #selector(toggle)
+        item.button?.setAccessibilityLabel("Charge Keeper")
+        let host = NSHostingController(rootView: PanelHost(keeper: keeper))
+        host.sizingOptions = .preferredContentSize  // the panel is wider in the two-limits note
+        popover.contentViewController = host
+        popover.behavior = .transient
+        popover.delegate = self
+        updateIcon()
     }
+
+    // Charging: the coloured picture in the bar's real look (it can differ from the app's: light mode, dark wallpaper). Otherwise the template icon.
+    private func updateIcon() {
+        let s = keeper.snap
+        let dark = item.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        item.button?.image = isCharging(s) ? chargingIcon(level: s.level, fill: iconFill(keeper.anim), dark: dark) : makeBattery(level: s.level)
+    }
+
+    private var closedAt = Date.distantPast
+    // A click on the icon while the panel is open first closes it (click-away), then arrives here: that click must not reopen it.
+    @objc private func toggle() { if popover.isShown { popover.performClose(nil) } else if Date().timeIntervalSince(closedAt) > 0.3 { show() } }
+
+    private func show() {
+        guard let b = item.button else { return }
+        keeper.panel(open: true)
+        popover.show(relativeTo: b.bounds, of: b, preferredEdge: .minY)
+        NSApp.activate(ignoringOtherApps: true)  // an accessory app is not active by default, so the slider and the click-away would not work
+    }
+
+    func popoverDidClose(_ notification: Notification) { closedAt = Date(); keeper.panel(open: false) }
 }
 
-struct MenuBarLabel: View {
-    let level: Int
-    var fill: Double? = nil  // nil = not charging: the plain template icon
-    @Environment(\.colorScheme) private var scheme
-    @State private var barDark: Bool?  // the real menu bar's look (it can differ from the app's: light mode, dark wallpaper)
+func runApp() -> Never {
+    let app = NSApplication.shared
+    let controller = StatusController()
+    app.delegate = controller
+    app.setActivationPolicy(.accessory)
+    withExtendedLifetime(controller) { app.run() }
+    exit(0)
+}
+
+struct PanelHost: View {
+    @ObservedObject var keeper: Keeper
     var body: some View {
-        Image(nsImage: fill.map { chargingIcon(level: level, fill: $0, dark: barDark ?? (scheme == .dark)) } ?? makeBattery(level: level))
-        .background(BarAppearance(dark: $barDark))
+        Panel(s: keeper.snap, bar: keeper.bar, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, quit: keeper.quit))
     }
-}
-
-// A zero-size view inside the menu-bar button that reports the button's own appearance, which follows the real bar.
-struct BarAppearance: NSViewRepresentable {
-    @Binding var dark: Bool?
-    final class Probe: NSView {
-        var report: (Bool) -> Void = { _ in }
-        private func send() { let d = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua; DispatchQueue.main.async { self.report(d) } }
-        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); send() }
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); send() }
-    }
-    func makeNSView(context: Context) -> Probe { let p = Probe(); p.report = { dark = $0 }; return p }
-    func updateNSView(_ v: Probe, context: Context) {}
 }
 
 struct PanelActions {

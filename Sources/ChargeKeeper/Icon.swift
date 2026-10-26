@@ -41,13 +41,13 @@ func sweepAmount(_ t: Double) -> Double {
     return x < 0.5 ? 2 * x * x : 1 - 2 * (1 - x) * (1 - x)
 }
 
-// The digits as one outline (bold, equal-width), centred on a point, for a flipped (y down) drawing.
+// The digits as one outline (medium, equal-width), centred on a point, for a flipped (y down) drawing.
 // The outline path, not styled text, because stroking styled text leaves stray lines where glyph parts overlap.
 private var digitsCache: (level: Int, path: CGPath)?  // the icon is redrawn 12 times a second, the level changes rarely
 private func digitsPath(_ level: Int) -> CGPath {
     if let c = digitsCache, c.level == level { return c.path }
     let text = "\(level)", centreX: CGFloat = 13.5, centreY: CGFloat = 7.9
-    let font = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .bold) as CTFont
+    let font = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .medium) as CTFont
     var chars = Array(text.utf16), glyphs = [CGGlyph](repeating: 0, count: chars.count)
     CTFontGetGlyphsForCharacters(font, &chars, &glyphs, chars.count)
     var advances = [CGSize](repeating: .zero, count: glyphs.count)

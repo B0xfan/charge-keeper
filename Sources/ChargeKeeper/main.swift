@@ -57,7 +57,7 @@ default:
     }
     let lockDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Charge Keeper")
     try? FileManager.default.createDirectory(at: lockDir, withIntermediateDirectories: true)
-    // Must stay a top-level constant: the lock is held for as long as this descriptor stays open, i.e. until the app exits.
+    // Never close lockFd: the lock is held for as long as this descriptor stays open, i.e. until the app exits.
     let lockFd = open(lockDir.appendingPathComponent("app.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
     if lockFd >= 0 {
         if flock(lockFd, LOCK_EX | LOCK_NB) != 0 { leave("already running, this copy exits", 0) }
@@ -65,5 +65,5 @@ default:
         // No lock file: fall back to the running-app list. If that check is wrong we still start, so there is always an app at login.
         leave("already running, this copy exits", 0)
     }
-    KeeperApp.main()
+    runApp()
 }
