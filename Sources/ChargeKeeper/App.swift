@@ -156,6 +156,7 @@ struct Panel: View {
             Button("Quit (charging turns back on)") { act.quit() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
         }
         .padding(14).frame(width: s.mode == .foreign ? 300 : 272)
+        .onAppear { draft = Double(s.limit) }
         .onChange(of: s.limit) { _, new in draft = Double(new) }
     }
 }

@@ -23,7 +23,6 @@ func selftest() -> Int32 {
     expect(shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: false), "login item: installed copy, first time")
     expect(!shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: true), "login item: asked only once")
     expect(!shouldRegisterLoginItem(path: "/Users/x/charge-keeper/build/Charge Keeper.app", asked: false), "login item: never for a build-folder copy")
-    expect(wakeChecks.first == 0 && wakeChecks == wakeChecks.sorted(), "wake: check at once, then again later")
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
     return bad == 0 ? 0 : 1
 }

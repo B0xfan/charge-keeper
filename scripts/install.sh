@@ -7,12 +7,15 @@ SRC="build/Charge Keeper.app"
 DST="/Applications/Charge Keeper.app"
 [[ -d "$SRC" ]] || { echo "No build found. Run scripts/local-build.sh first."; exit 1; }
 codesign --verify --strict "$SRC"
-if pgrep -x ChargeKeeper >/dev/null; then
-    pkill -TERM -x ChargeKeeper
-    for _ in {1..20}; do pgrep -x ChargeKeeper >/dev/null || break; sleep 1; done
-    ! pgrep -x ChargeKeeper >/dev/null || { echo "The old copy did not quit."; exit 1; }
+APP_PROC='/ChargeKeeper$'  # the app only: its safety watchdog is a second process with the same name plus arguments, and the app stops it itself after putting charging back
+if pgrep -f "$APP_PROC" >/dev/null; then
+    pkill -TERM -f "$APP_PROC"
+    for _ in {1..20}; do pgrep -f "$APP_PROC" >/dev/null || break; sleep 1; done
+    ! pgrep -f "$APP_PROC" >/dev/null || { echo "The old copy did not quit."; exit 1; }
 fi
+rm -rf "$DST.new"
+ditto "$SRC" "$DST.new"  # copy first: a failed copy must not leave /Applications without the app
 rm -rf "$DST"
-ditto "$SRC" "$DST"
+mv "$DST.new" "$DST"
 open "$DST"
 echo "Installed: $DST"

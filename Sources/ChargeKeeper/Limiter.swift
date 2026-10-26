@@ -22,7 +22,9 @@ final class Limiter {
     private func clearLeftoverLocked() {
         guard let text = try? String(contentsOf: markerURL) else { return }
         let lim = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 100
-        if restore(m, LimitState(enabled: false, limit: lim)) { try? FileManager.default.removeItem(at: markerURL) }
+        if restore(m, LimitState(enabled: false, limit: lim), tries: 1) {  // one try: the next tick retries, and the lock must not be held for seconds
+            try? FileManager.default.removeItem(at: markerURL)
+        }
     }
 
     // Holds the limit at `target`. Cheap when it already holds.
