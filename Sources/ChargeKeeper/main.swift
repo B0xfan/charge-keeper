@@ -47,7 +47,13 @@ case "--restore":
     print("restore: \(ok) state=\(String(describing: m.state()))")
     exit(ok ? 0 : 1)
 default:
-    // A second copy would switch off the first copy's live limit at start-up, so it just leaves.
-    if let id = Bundle.main.bundleIdentifier, NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 { exit(0) }
+    // A second copy would show a second icon and switch off the first copy's live limit at start-up, so it just leaves.
+    // An unknown flag (say --help typed in a terminal) must not start the app either. The lock is the check: a copy started
+    // from a terminal is not always listed as a running app yet. O_CLOEXEC: the watchdog must not inherit it and hold it after the app dies.
+    if args.count > 1 { print("usage: ChargeKeeper (no arguments) | --selftest | --probe | --restore | --render <folder>"); exit(2) }
+    let lockDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Charge Keeper")
+    try? FileManager.default.createDirectory(at: lockDir, withIntermediateDirectories: true)
+    let lockFd = open(lockDir.appendingPathComponent("app.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+    if lockFd >= 0 && flock(lockFd, LOCK_EX | LOCK_NB) != 0 { exit(0) }
     KeeperApp.main()
 }
