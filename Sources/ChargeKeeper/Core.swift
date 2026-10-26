@@ -97,7 +97,10 @@ func spawnDetached(_ args: [String], stdoutFd: Int32) -> pid_t? {
     var defaults = sigset_t()
     sigfillset(&defaults)  // we ignore SIGINT/SIGTERM; the child must not inherit that
     posix_spawnattr_setsigdefault(&attr, &defaults)
-    posix_spawnattr_setflags(&attr, Int16(0x0400 | 0x04))  // POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF
+    var none = sigset_t()
+    sigemptyset(&none)
+    posix_spawnattr_setsigmask(&attr, &none)  // the work thread has SIGTERM blocked, and a child inherits that mask
+    posix_spawnattr_setflags(&attr, Int16(0x0400 | 0x04 | 0x08))  // POSIX_SPAWN_SETSID | SETSIGDEF | SETSIGMASK
     var fa: posix_spawn_file_actions_t? = nil
     posix_spawn_file_actions_init(&fa)
     posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0)

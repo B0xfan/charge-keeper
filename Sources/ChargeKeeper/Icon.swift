@@ -10,7 +10,8 @@ func makeShieldBattery(fill: Double? = nil, ink: NSColor = .black, green: NSColo
         cg.scaleBy(x: 22.0 / 28.0, y: 22.0 / 28.0)
         if let f = fill {
             green.setFill()
-            NSBezierPath(roundedRect: NSRect(x: 1.8, y: 2.3, width: 20.4 * min(1, max(0, f)), height: 9.4), xRadius: 2.2, yRadius: 2.2).fill()
+            let w = 20.4 * min(1, max(0, f)), r = min(2.2, w / 2)  // a sliver narrower than two corners must not become a blob
+            NSBezierPath(roundedRect: NSRect(x: 1.8, y: 2.3, width: w, height: 9.4), xRadius: r, yRadius: r).fill()
         }
         ink.set()
         let body = NSBezierPath(roundedRect: NSRect(x: 1, y: 1.5, width: 22, height: 11), xRadius: 3, yRadius: 3)

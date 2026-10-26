@@ -64,7 +64,7 @@ final class Limiter {
         guard restore(m, o) else { return false }  // stays armed: the watchdog and the next start-up check still cover it
         orig = nil
         try? FileManager.default.removeItem(at: markerURL)
-        if watchdog > 0 { kill(watchdog, SIGTERM); waitpid(watchdog, nil, 0); watchdog = 0 }  // it only exits; we already restored
+        if watchdog > 0 { kill(watchdog, SIGKILL); waitpid(watchdog, nil, 0); watchdog = 0 }  // it only exits; we already restored
         return true
     }
 

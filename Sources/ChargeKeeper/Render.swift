@@ -44,13 +44,13 @@ private struct Stage: View {
     for dark in [false, true] {
         let tone = dark ? "dark" : "light"
         ok = saveIcon(shieldBattery, dark: dark, to: "\(dir)/icon-\(tone).png") && ok
-        for (name, f) in [("sliver", 0.07), ("mid", 0.5), ("full", 1.0), ("reduce-motion", Anim.still.icon)] {
+        for (name, f) in [("sliver", iconFill(0)), ("mid", 0.5), ("full", 1.0), ("reduce-motion", iconFill(stillSweep))] {
             ok = saveIcon(chargingIcon(fill: f, dark: dark), dark: dark, to: "\(dir)/icon-charging-\(name)-\(tone).png") && ok
         }
         // The panel bar while charging (start, middle, end of a round), and the Reduce Motion still.
         let charging = Snapshot(level: 62, plugged: true, charging: true, limit: 80, mode: .holding)
-        for (name, b) in [("start", 0.0), ("mid", 0.5), ("end", 1.0), ("reduce-motion", Anim.still.bar)] {
-            ok = save(Stage(snap: charging, dark: dark, bar: b, fill: Anim.still.icon), dark: dark, scale: 2, to: "\(dir)/panel-charging-\(name)-\(tone).png") && ok
+        for (name, b) in [("start", 0.0), ("mid", 0.5), ("end", 1.0), ("reduce-motion", stillSweep)] {
+            ok = save(Stage(snap: charging, dark: dark, bar: b, fill: iconFill(stillSweep)), dark: dark, scale: 2, to: "\(dir)/panel-charging-\(name)-\(tone).png") && ok
         }
     }
     return ok

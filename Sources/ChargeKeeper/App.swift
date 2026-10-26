@@ -36,12 +36,9 @@ func isCharging(_ s: Snapshot) -> Bool {
     s.plugged && s.charging && (s.mode == .fullOnce || (s.mode == .holding && s.level < s.limit))
 }
 
-// What the animation shows right now: how full the icon's green is, and how much of the panel bar's stretch is drawn.
-struct Anim: Equatable {
-    var icon = 0.07
-    var bar = 0.0
-    static let still = Anim(icon: 0.6, bar: 0.5)  // Reduce Motion: a still picture of "charging"
-}
+// The animation is one number, 0...1 (see sweepAmount): the icon's green and the panel bar's stretch both follow it.
+let stillSweep = 0.5  // Reduce Motion: a still picture of "charging"
+func iconFill(_ sweep: Double) -> Double { 0.07 + 0.93 * sweep }  // the icon starts as a sliver, never empty
 
 // Start with the Mac, once, and only for the copy in /Applications (a build folder copy must not become a login item).
 // If John switches it off in System Settings it stays off: the question is asked a single time.
@@ -55,8 +52,9 @@ func registerLoginItemOnce() {
 
 final class Keeper: ObservableObject {
     @Published private(set) var snap = Snapshot()
-    @Published private(set) var anim = Anim()
-    private var animTimer: Timer?  // exists only while the Mac is charging and Reduce Motion is off
+    @Published private(set) var anim = 0.0
+    private var animTimer: Timer?  // exists only while the Mac is charging, Reduce Motion is off and a screen is awake
+    private var screensAsleep = false
     private let limiter: Limiter?
     private let work = DispatchQueue(label: "keeper.work")  // every Mac-limit call happens here, never on the screen thread
     private var limit: Int  // work queue only
@@ -75,6 +73,11 @@ final class Keeper: ObservableObject {
             // to answer right after wake, so ask again a little later instead of waiting for the 30 s tick.
             for delay in wakeChecks { self.work.asyncAfter(deadline: .now() + delay) { self.step() } }
         }
+        let nc = NSWorkspace.shared.notificationCenter
+        for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false)] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.screensAsleep = asleep; self?.refreshAnimation() }
+        }
+        nc.addObserver(forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.refreshAnimation() }
     }
 
     // Work queue: read the battery, bring the Mac's limit in line with what is wanted, publish.
@@ -98,19 +101,22 @@ final class Keeper: ObservableObject {
         DispatchQueue.main.async { self.snap = s; self.refreshAnimation() }
     }
 
-    // Main thread. The timer runs only while charging; any other state stops it completely and shows today's plain icon.
+    // Main thread. The timer runs only while charging with a screen awake; any other state stops it and shows today's plain icon.
     private func refreshAnimation() {
         let charging = isCharging(snap)
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if charging && !reduced {
+        if charging && !reduced && !screensAsleep {
             guard animTimer == nil else { return }
-            animTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 12, repeats: true) { [weak self] _ in
+            let t = Timer(timeInterval: 1.0 / 12, repeats: true) { [weak self] _ in
                 let f = sweepAmount(Date.timeIntervalSinceReferenceDate)
-                self?.anim = Anim(icon: 0.07 + 0.93 * f, bar: f)
+                if f != self?.anim { self?.anim = f }  // the rest at the end of each round publishes nothing
             }
+            RunLoop.main.add(t, forMode: .common)  // .common: keeps moving while the slider is dragged
+            animTimer = t
         } else {
             animTimer?.invalidate(); animTimer = nil
-            anim = charging ? .still : Anim()
+            let still = charging ? stillSweep : 0  // charging with the screens asleep keeps the last frame
+            if !charging || reduced, anim != still { anim = still }
         }
     }
 
@@ -126,9 +132,9 @@ struct KeeperApp: App {  // started from main.swift
     @StateObject private var keeper = Keeper()
     var body: some Scene {
         MenuBarExtra {
-            Panel(s: keeper.snap, bar: keeper.anim.bar, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, quit: keeper.quit))
+            Panel(s: keeper.snap, bar: keeper.anim, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, quit: keeper.quit))
         } label: {
-            MenuBarLabel(level: keeper.snap.level, fill: isCharging(keeper.snap) ? keeper.anim.icon : nil)
+            MenuBarLabel(level: keeper.snap.level, fill: isCharging(keeper.snap) ? iconFill(keeper.anim) : nil)
         }
         .menuBarExtraStyle(.window)
     }
@@ -138,12 +144,27 @@ struct MenuBarLabel: View {
     let level: Int
     var fill: Double? = nil  // nil = not charging: the plain template icon
     @Environment(\.colorScheme) private var scheme
+    @State private var barDark: Bool?  // the real menu bar's look (it can differ from the app's: light mode, dark wallpaper)
     var body: some View {
         HStack(spacing: 4) {
-            Image(nsImage: fill.map { chargingIcon(fill: $0, dark: scheme == .dark) } ?? shieldBattery)
+            Image(nsImage: fill.map { chargingIcon(fill: $0, dark: barDark ?? (scheme == .dark)) } ?? shieldBattery)
             Text("\(level)%")
         }
+        .background(BarAppearance(dark: $barDark))
     }
+}
+
+// A zero-size view inside the menu-bar button that reports the button's own appearance, which follows the real bar.
+struct BarAppearance: NSViewRepresentable {
+    @Binding var dark: Bool?
+    final class Probe: NSView {
+        var report: (Bool) -> Void = { _ in }
+        private func send() { let d = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua; DispatchQueue.main.async { self.report(d) } }
+        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); send() }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); send() }
+    }
+    func makeNSView(context: Context) -> Probe { let p = Probe(); p.report = { dark = $0 }; return p }
+    func updateNSView(_ v: Probe, context: Context) {}
 }
 
 struct PanelActions {
@@ -211,8 +232,8 @@ struct LevelBar: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.secondary.opacity(0.35))
                     Rectangle().fill(Color.green).frame(width: w * CGFloat(min(100, max(0, level))) / 100)
-                    if let m = marker, m > level, stretch > 0 {
-                        Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(m - level) / 100 * stretch).offset(x: w * CGFloat(level) / 100)
+                    if case let end = marker ?? 100, end > level, stretch > 0 {  // no marker (charge to full once): sweeps to 100
+                        Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(end - level) / 100 * stretch).offset(x: w * CGFloat(level) / 100)
                     }
                 }.clipShape(Capsule())
                 if let m = marker { Rectangle().fill(Color.primary).frame(width: 2, height: 14).offset(x: w * CGFloat(m) / 100 - 1) }
