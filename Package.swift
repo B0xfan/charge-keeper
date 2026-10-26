@@ -3,6 +3,6 @@ import PackageDescription
 
 let package = Package(
     name: "ChargeKeeper",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     targets: [.executableTarget(name: "ChargeKeeper", path: "Sources/ChargeKeeper")]
 )

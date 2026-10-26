@@ -17,7 +17,9 @@ final class Limiter {
     init(_ m: MCL) { self.m = m }
 
     // A note left by an earlier run means that run died with the limit on: put it back. No note = not ours, never touched.
-    func clearLeftover() {
+    // Called from apply() while we own nothing, so it is retried every tick until it works (right after login the
+    // Mac's charge service may not answer yet; without the retry our own leftover would look like a foreign limit).
+    private func clearLeftoverLocked() {
         guard let text = try? String(contentsOf: markerURL) else { return }
         let lim = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 100
         if restore(m, LimitState(enabled: false, limit: lim)) { try? FileManager.default.removeItem(at: markerURL) }
@@ -28,6 +30,7 @@ final class Limiter {
         lock.lock(); defer { lock.unlock() }
         guard !closed else { return .failed("Charge Keeper is closing.") }
         guard m.supported else { return .unsupported }
+        if orig == nil { clearLeftoverLocked() }
         guard let cur = m.state() else { return .failed("Could not read the Mac's charge limit.") }
         if orig == nil {
             guard !cur.enabled else { return .foreign }  // the Mac's own limit (or another app's) is on: do not fight it

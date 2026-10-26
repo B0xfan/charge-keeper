@@ -13,9 +13,12 @@ not set (for example Apple's own) is never touched.
 
 ## Flags
 
-`--restore` puts the limit back to off / 100. `--probe` reads only. `--selftest` runs the logic checks.
+`--restore` puts the limit back to off / 100. `--probe` reads only. `--selftest` runs the logic checks. `--render <folder>` draws the panel and icon to PNG files off-screen (no window).
 
 ## Building
 
 Cloud: `scripts/cloud-build.sh` (GitHub Actions, manual trigger only). Local, niced, one job: `scripts/local-build.sh`.
 Both produce `Charge Keeper.app`, signed ad hoc. Neither installs or launches it.
+
+Install (own Mac): `scripts/install.sh` copies the build into /Applications and opens it. From /Applications the app
+adds itself to Login Items once, so it starts with the Mac and cleans up any limit left by a crash or power cut.

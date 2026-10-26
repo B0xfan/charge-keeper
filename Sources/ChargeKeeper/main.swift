@@ -2,6 +2,7 @@
 //   --restore    put the Mac's charge limit back to off / 100 (also works if the app is not running)
 //   --probe      read-only: is the limit supported, on or off, which level
 //   --selftest   pure logic checks, no hardware
+//   --render <folder>   draw the panel and icon to PNG files off-screen (no window, no charge-limit access)
 import Foundation
 import AppKit
 
@@ -19,6 +20,10 @@ func selftest() -> Int32 {
     expect(statusText(s) == "Charging to full, once", "charge to full once")
     s.mode = .foreign
     expect(statusText(s) == "Not holding yet", "the Mac's own limit is on")
+    expect(shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: false), "login item: installed copy, first time")
+    expect(!shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: true), "login item: asked only once")
+    expect(!shouldRegisterLoginItem(path: "/Users/x/charge-keeper/build/Charge Keeper.app", asked: false), "login item: never for a build-folder copy")
+    expect(wakeChecks.first == 0 && wakeChecks == wakeChecks.sorted(), "wake: check at once, then again later")
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
     return bad == 0 ? 0 : 1
 }
@@ -27,6 +32,7 @@ let args = CommandLine.arguments
 switch args.dropFirst().first {
 case "--watchdog": runWatchdog(args)
 case "--selftest": exit(selftest())
+case "--render": exit(MainActor.assumeIsolated { renderAll(to: args.count > 2 ? args[2] : "keeper-render") } ? 0 : 1)
 case "--probe":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(1) }
     let st = m.state()
