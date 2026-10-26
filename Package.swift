@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "ChargeKeeperProbe",
+    name: "ChargeKeeper",
     platforms: [.macOS(.v13)],
-    targets: [.executableTarget(name: "ChargeKeeperProbe", path: "Sources/ChargeKeeperProbe")]
+    targets: [.executableTarget(name: "ChargeKeeper", path: "Sources/ChargeKeeper")]
 )

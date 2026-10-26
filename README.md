@@ -1,23 +1,21 @@
 # Charge Keeper
 
-A planned menu-bar app that stops a MacBook charging at a chosen level. This repo is at Phase 1: a small
-command-line proof (`ChargeKeeperProbe`) that finds out which charge-control switches a Mac has, and whether
-charging can be stopped and always put back.
+A menu-bar app that stops a MacBook charging at a level you choose, using the Mac's own built-in charge limit
+(the private PowerUI framework). No charging-chip key is written, no password, no background helper.
 
 Author: John Hesch. Original code. Apple silicon, personal use.
 
-## Commands
+## Safety
 
-Phase 1 uses macOS's own built-in charge limit (the private PowerUI framework). No charging-chip key is written.
-No root needed: the tool talks to the user's own PowerUI service.
+The limit is always put back: on Quit and on every catchable signal; a small watchdog (a second copy of the program)
+covers a crash or kill -9; at start-up a leftover note from an earlier run triggers a clean-up. A limit the app did
+not set (for example Apple's own) is never touched.
 
-- `probe` reads only: is the limit supported, on or off, which level, offered steps, battery state.
-- `test [pct] [--try89]` sets the limit (default 90), verifies it, restores, then kills itself to prove a watchdog restores it.
-- `restore` puts the limit back to off / 100.
+## Flags
 
-The setting is always put back: every exit path (normal, Ctrl-C, terminate) restores it; a separate watchdog process
-covers the ones that cannot be caught (kill -9).
+`--restore` puts the limit back to off / 100. `--probe` reads only. `--selftest` runs the logic checks.
 
 ## Building
 
-Builds run on GitHub Actions only (manual trigger): `scripts/cloud-build.sh`.
+Cloud: `scripts/cloud-build.sh` (GitHub Actions, manual trigger only). Local, niced, one job: `scripts/local-build.sh`.
+Both produce `Charge Keeper.app`, signed ad hoc. Neither installs or launches it.

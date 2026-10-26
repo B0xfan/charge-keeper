@@ -10,17 +10,16 @@ jobs:
       - name: Release build
         run: swift build -c release -j 2
       - name: Self-test (pure logic only; the runner has no battery, so nothing touches charging)
-        run: .build/release/ChargeKeeperProbe selftest
-      - name: Read-only probe smoke test (must not crash on a machine without the keys)
-        run: .build/release/ChargeKeeperProbe probe || true
-      - name: Package
+        run: .build/release/ChargeKeeper --selftest
+      - name: Read-only smoke test (must not crash on a machine without the limit)
+        run: .build/release/ChargeKeeper --probe || true
+      - name: Package the app
         run: |
-          mkdir -p out && cp .build/release/ChargeKeeperProbe out/
-          codesign --force -s - out/ChargeKeeperProbe
-          tar -C out -czf probe.tgz ChargeKeeperProbe
+          scripts/make-app.sh
+          ditto -c -k --keepParent "build/Charge Keeper.app" ChargeKeeper.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: ChargeKeeperProbe
-          path: probe.tgz
+          name: ChargeKeeper
+          path: ChargeKeeper.zip
           retention-days: 3
           compression-level: 0
