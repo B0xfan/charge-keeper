@@ -38,8 +38,10 @@ final class Limiter {
             guard !cur.enabled else { return .foreign }  // the Mac's own limit (or another app's) is on: do not fight it
             guard startWatchdog(cur) else { return .failed("Could not start the safety watchdog, so nothing was changed.") }
             orig = cur
-        } else if cur == LimitState(enabled: true, limit: target) {
-            return .ok
+        } else {
+            // waitpid, not kill(,0): a dead watchdog stays a zombie, which kill(,0) still calls alive. Failure retries next tick.
+            if watchdog <= 0 || waitpid(watchdog, nil, WNOHANG) != 0, let o = orig { watchdog = 0; _ = startWatchdog(o) }
+            if cur == LimitState(enabled: true, limit: target) { return .ok }
         }
         guard m.setLimit(target) else { return fail("macOS refused the limit \(target)%") }
         if m.enabled() != true { m.enable() }  // setting the level may already switch it on
@@ -111,6 +113,7 @@ func installExitSafety(_ l: Limiter) {
 // The second copy of this program, started by apply(): waits for its parent to die, then puts the limit back.
 func runWatchdog(_ args: [String]) -> Never {
     guard args.count == 4, let parent = pid_t(args[2]), let lim = Int(args[3]), let m = MCL() else { exit(2) }
+    for sig in [SIGTERM, SIGINT, SIGHUP] { signal(sig, SIG_IGN) }  // a `killall` aimed at the app must not take the watchdog too; release uses SIGKILL
     write(1, "r", 1)
     while getppid() == parent { usleep(300_000) }  // getppid changes when the parent dies, even as a zombie
     let ok = restore(m, LimitState(enabled: false, limit: lim), tries: 20)

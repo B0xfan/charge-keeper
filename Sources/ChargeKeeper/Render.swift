@@ -49,8 +49,9 @@ private struct Stage: View {
         for (name, f) in [("sliver", iconFill(0)), ("mid", 0.5), ("full", 1.0), ("reduce-motion", iconFill(stillSweep))] {
             ok = saveIcon(chargingIcon(level: 62, fill: f, dark: dark), dark: dark, to: "\(dir)/icon-charging-\(name)-\(tone).png") && ok
         }
-        ok = saveIcon(chargingIcon(level: 100, fill: 0.5, dark: dark), dark: dark, to: "\(dir)/icon-charging-100-\(tone).png") && ok
-        ok = saveIcon(chargingIcon(level: 9, fill: 0.5, dark: dark), dark: dark, to: "\(dir)/icon-charging-9-\(tone).png") && ok
+        for lv in [0, 6, 9, 100] {  // digits with holes: the green must be cleared inside them too
+            ok = saveIcon(chargingIcon(level: lv, fill: 1.0, dark: dark), dark: dark, to: "\(dir)/icon-charging-\(lv)-\(tone).png") && ok
+        }
         // The panel bar while charging (start, middle, end of a round), and the Reduce Motion still.
         let charging = Snapshot(level: 62, plugged: true, charging: true, limit: 80, mode: .holding)
         for (name, b) in [("start", 0.0), ("mid", 0.5), ("end", 1.0), ("reduce-motion", stillSweep)] {

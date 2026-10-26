@@ -108,8 +108,9 @@ final class Keeper: ObservableObject {
         if charging && !reduced && !screensAsleep {
             guard animTimer == nil else { return }
             let t = Timer(timeInterval: 1.0 / 12, repeats: true) { [weak self] _ in
+                guard let self else { return }
                 let f = sweepAmount(Date.timeIntervalSinceReferenceDate)
-                if f != self?.anim { self?.anim = f }  // the rest at the end of each round publishes nothing
+                if f != self.anim { self.anim = f }  // the rest at the end of each round publishes nothing
             }
             RunLoop.main.add(t, forMode: .common)  // .common: keeps moving while the slider is dragged
             animTimer = t

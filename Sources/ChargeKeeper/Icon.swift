@@ -17,10 +17,10 @@ func makeBattery(level: Int, fill: Double? = nil, ink: NSColor = .black, green: 
         body.lineWidth = 1.3
         body.stroke()
         NSBezierPath(roundedRect: NSRect(x: 27.2, y: 4.5, width: 2.3, height: 6), xRadius: 1, yRadius: 1).fill()
-        let path = digitsPath("\(level)", centreX: 13.5, centreY: 7.9)
+        let path = digitsPath(level)
         if fill != nil {  // over the green: a thin outline in the bar's own colour (cut out, so the bar shows through)
             cg.setBlendMode(.clear)
-            cg.addPath(path); cg.setLineWidth(2.2); cg.setLineJoin(.round); cg.strokePath()
+            cg.addPath(path); cg.setLineWidth(3.0); cg.setLineJoin(.round); cg.strokePath()
             cg.setBlendMode(.normal)
         }
         cg.addPath(path); cg.setFillColor(ink.cgColor); cg.fillPath()
@@ -43,7 +43,10 @@ func sweepAmount(_ t: Double) -> Double {
 
 // The digits as one outline (bold, equal-width), centred on a point, for a flipped (y down) drawing.
 // The outline path, not styled text, because stroking styled text leaves stray lines where glyph parts overlap.
-private func digitsPath(_ text: String, centreX: CGFloat, centreY: CGFloat) -> CGPath {
+private var digitsCache: (level: Int, path: CGPath)?  // the icon is redrawn 12 times a second, the level changes rarely
+private func digitsPath(_ level: Int) -> CGPath {
+    if let c = digitsCache, c.level == level { return c.path }
+    let text = "\(level)", centreX: CGFloat = 13.5, centreY: CGFloat = 7.9
     let font = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .bold) as CTFont
     var chars = Array(text.utf16), glyphs = [CGGlyph](repeating: 0, count: chars.count)
     CTFontGetGlyphsForCharacters(font, &chars, &glyphs, chars.count)
@@ -57,5 +60,6 @@ private func digitsPath(_ text: String, centreX: CGFloat, centreY: CGFloat) -> C
         }
         x += adv.width
     }
+    digitsCache = (level, out)
     return out
 }
