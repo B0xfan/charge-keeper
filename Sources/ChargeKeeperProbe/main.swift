@@ -205,16 +205,22 @@ final class Hold {
         guard let pid = spawnDetached(wdArgs) else { return false }
         watchdog = pid
         usleep(700_000)
-        guard kill(pid, 0) == 0 else { return false }  // no watchdog, no inhibit
-        lock.lock(); active = true; lock.unlock()
+        var status: Int32 = 0
+        guard waitpid(pid, &status, WNOHANG) == 0 else { return false }  // already exited: no watchdog, no inhibit
+        // The lock is held for the whole write loop, so a signal's release() waits and then restores everything.
+        lock.lock(); defer { lock.unlock() }
+        active = true
         for s in steps {
-            guard smc.write(s.key, s.inhibit), smc.read(s.key) == s.inhibit else { _ = release(); return false }
+            guard smc.write(s.key, s.inhibit), smc.read(s.key) == s.inhibit else { releaseLocked(); return false }
         }
         return true
     }
     // Safe to call from anywhere, any number of times.
     func release() -> Bool {
         lock.lock(); defer { lock.unlock() }
+        return releaseLocked()
+    }
+    @discardableResult private func releaseLocked() -> Bool {
         guard active else { return true }
         let ok = restoreAll(smc, steps)
         if ok { active = false; if watchdog > 0 { kill(watchdog, SIGTERM); watchdog = 0 } }  // watchdog only exits; the parent already restored
@@ -381,11 +387,9 @@ case "test":
     exit(runTest(sleepTest: args.contains("--sleep")))
 case "restore":
     guard geteuid() == 0, let smc = SMC() else { print("restore needs root"); exit(2) }
-    var info: [String: KeyInfo] = [:]
-    for k in candidateKeys { if let i = smc.info(k) { info[k] = i } }
     // The only values ever written are the documented "charging on" zeros, and only to a key that exists with its expected size.
     var ok = true
-    for (k, size) in [("CHTE", 4), ("CH0B", 1), ("CH0C", 1)] where info[k]?.size == size {
+    for (k, size) in [("CHTE", 4), ("CH0B", 1), ("CH0C", 1)] where smc.info(k)?.size == size {
         let zero = [UInt8](repeating: 0, count: size)
         if smc.read(k) != zero { ok = smc.write(k, zero) && smc.read(k) == zero && ok }
         print("\(k): \(smc.read(k).map(hex) ?? "?")")
@@ -405,7 +409,7 @@ case "hold":  // internal: used by the kill test
     exit(hold.release() ? 0 : 1)
 case "watchdog":  // internal: args = parent pid, deadline seconds, KEY=originalhex ...
     guard args.count > 4, let deadline = Int(args[3]), let smc = SMC() else { exit(2) }
-    let parent = getppid()
+    guard let parent = pid_t(args[2]) else { exit(2) }  // the pid given at spawn, so a parent that died early is noticed
     var steps: [Step] = []
     for a in args[4...] {
         let p = a.split(separator: "=").map(String.init)
