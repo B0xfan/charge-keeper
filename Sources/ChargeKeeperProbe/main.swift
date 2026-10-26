@@ -40,7 +40,7 @@ final class MCL {
     var supported: Bool { imp("isMCLSupported", (@convention(c) (AnyObject, Selector) -> Bool).self)(obj, Selector(("isMCLSupported"))) }
     func enabled() -> Bool? {
         var e: Unmanaged<AnyObject>? = nil
-        let v = imp("isMCLCurrentlyEnabled:", (@convention(c) (AnyObject, Selector, Err) -> UInt).self)(obj, Selector(("isMCLCurrentlyEnabled:")), &e)
+        let v = imp("isMCLCurrentlyEnabled:", (@convention(c) (AnyObject, Selector, Err) -> UInt8).self)(obj, Selector(("isMCLCurrentlyEnabled:")), &e)  // low byte only: a 1-byte BOOL leaves the upper bits undefined
         err(e)
         return e == nil ? v != 0 : nil
     }
@@ -60,8 +60,9 @@ final class MCL {
         return State(enabled: e, limit: l)
     }
     @discardableResult func setLimit(_ pct: Int) -> Bool {
+        guard let level = UInt8(exactly: pct) else { return false }
         var e: Unmanaged<AnyObject>? = nil
-        let ok = imp("setMCLLimit:error:", (@convention(c) (AnyObject, Selector, UInt8, Err) -> Bool).self)(obj, Selector(("setMCLLimit:error:")), UInt8(pct), &e)
+        let ok = imp("setMCLLimit:error:", (@convention(c) (AnyObject, Selector, UInt8, Err) -> Bool).self)(obj, Selector(("setMCLLimit:error:")), level, &e)
         err(e)
         return ok
     }
@@ -111,11 +112,7 @@ func battery() -> Battery {
                    reason: ((IORegistryEntryCreateCFProperty(svc, "ChargerData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any])?["NotChargingReason"] as? NSNumber)?.intValue)
 }
 func pmsetLine() -> String {
-    let p = Process(), pipe = Pipe()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset"); p.arguments = ["-g", "batt"]; p.standardOutput = pipe
-    try? p.run(); p.waitUntilExit()
-    return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        .split(separator: "\n").dropFirst().first.map { $0.trimmingCharacters(in: .whitespaces) } ?? "?"
+    run(["/usr/bin/pmset", "-g", "batt"]).split(separator: "\n").dropFirst().first.map { $0.trimmingCharacters(in: .whitespaces) } ?? "?"
 }
 
 func waitFor(_ seconds: Int, _ cond: () -> Bool) -> Bool {
@@ -137,7 +134,7 @@ func selfPath() -> String {
 }
 
 // Starts a process in its own session, so a Ctrl-C or a kill aimed at this tool does not reach it.
-func spawnDetached(_ args: [String]) -> pid_t? {
+func spawnDetached(_ args: [String], stdoutFd: Int32? = nil) -> pid_t? {
     var attr: posix_spawnattr_t? = nil
     posix_spawnattr_init(&attr)
     var defaults = sigset_t()
@@ -147,7 +144,7 @@ func spawnDetached(_ args: [String]) -> pid_t? {
     var fa: posix_spawn_file_actions_t? = nil
     posix_spawn_file_actions_init(&fa)
     posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0)
-    posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0)
+    if let fd = stdoutFd { posix_spawn_file_actions_adddup2(&fa, fd, 1) } else { posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0) }
     posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0)
     var cargs: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
     cargs.append(nil)
@@ -168,11 +165,19 @@ final class Hold {
 
     func engage(target: Int, deadline: Int) -> Bool {
         let wdArgs = [selfPath(), "watchdog", String(getpid()), String(deadline), orig.enabled ? "1" : "0", String(orig.limit)]
-        guard let pid = spawnDetached(wdArgs) else { return false }
+        // The watchdog says "r" once its own PowerUI client works; no "r" (it died or hung) means no change is made.
+        var fds: [Int32] = [0, 0]
+        guard pipe(&fds) == 0 else { return false }
+        let pid = spawnDetached(wdArgs, stdoutFd: fds[1])
+        close(fds[1])
+        defer { close(fds[0]) }
+        guard let pid else { return false }
         watchdog = pid
-        usleep(700_000)
-        var status: Int32 = 0
-        guard waitpid(pid, &status, WNOHANG) == 0 else { return false }  // already exited: no watchdog, so no change
+        var pfd = pollfd(fd: fds[0], events: Int16(POLLIN), revents: 0)
+        var byte: UInt8 = 0
+        guard poll(&pfd, 1, 5000) == 1, read(fds[0], &byte, 1) == 1, byte == UInt8(ascii: "r") else {
+            kill(pid, SIGKILL); watchdog = 0; return false
+        }
         // Held for the whole change, so a signal's release() waits and then restores everything.
         lock.lock(); defer { lock.unlock() }
         active = true
@@ -233,6 +238,10 @@ func runTest(target: Int, try89: Bool) -> Int32 {
     let b0 = battery()
     guard b0.external == true, b0.charging == true else {
         print("RESULT: Mac is not plugged in and charging right now (\(b0.text)), so a stop cannot be shown. Nothing was changed.")
+        return 1
+    }
+    guard let level = b0.current, level < target - 3 else {
+        print("RESULT: battery is at \(b0.current.map(String.init) ?? "?")%, too close to \(target)% for the stop to prove anything. Nothing was changed.")
         return 1
     }
     installExitSafety()
@@ -331,12 +340,15 @@ case "hold":  // internal: used by the kill test. args = target, seconds
     currentHold = hold
     guard hold.engage(target: target, deadline: 150) else { print("failed"); exit(1) }
     print("held")
-    sleep(UInt32(args.count > 3 ? Int(args[3]) ?? 30 : 30))
+    // Leave as soon as the test process that started us is gone, so a killed test does not keep the limit up.
+    let owner = getppid()
+    for _ in 0..<(args.count > 3 ? Int(args[3]) ?? 30 : 30) where getppid() == owner { sleep(1) }
     exit(hold.release() ? 0 : 1)
 case "watchdog":  // internal: args = parent pid, deadline seconds, original enabled (0/1), original limit
     guard args.count == 6, let parent = pid_t(args[2]), let deadline = Int(args[3]), let lim = Int(args[5]), let m = MCL() else { exit(2) }
     let orig = State(enabled: args[4] == "1", limit: lim)
     let end = Date().addingTimeInterval(TimeInterval(deadline))
+    write(1, "r", 1)
     // getppid changes when the parent dies, even if the parent is a zombie
     while getppid() == parent && Date() < end { usleep(300_000) }
     exit(restore(m, orig, tries: 20) ? 0 : 1)
