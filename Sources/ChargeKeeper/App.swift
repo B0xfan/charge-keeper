@@ -31,6 +31,18 @@ func statusText(_ s: Snapshot) -> String {
     }
 }
 
+// Actually charging (same test as the status line): this is what drives the green movement.
+func isCharging(_ s: Snapshot) -> Bool {
+    s.plugged && s.charging && (s.mode == .fullOnce || (s.mode == .holding && s.level < s.limit))
+}
+
+// What the animation shows right now: how full the icon's green is, and how much of the panel bar's stretch is drawn.
+struct Anim: Equatable {
+    var icon = 0.07
+    var bar = 0.0
+    static let still = Anim(icon: 0.6, bar: 0.5)  // Reduce Motion: a still picture of "charging"
+}
+
 // Start with the Mac, once, and only for the copy in /Applications (a build folder copy must not become a login item).
 // If John switches it off in System Settings it stays off: the question is asked a single time.
 func shouldRegisterLoginItem(path: String, asked: Bool) -> Bool { !asked && path.hasPrefix("/Applications/") }
@@ -43,6 +55,8 @@ func registerLoginItemOnce() {
 
 final class Keeper: ObservableObject {
     @Published private(set) var snap = Snapshot()
+    @Published private(set) var anim = Anim()
+    private var animTimer: Timer?  // exists only while the Mac is charging and Reduce Motion is off
     private let limiter: Limiter?
     private let work = DispatchQueue(label: "keeper.work")  // every Mac-limit call happens here, never on the screen thread
     private var limit: Int  // work queue only
@@ -81,7 +95,23 @@ final class Keeper: ObservableObject {
             }
         }
         let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode)
-        DispatchQueue.main.async { self.snap = s }
+        DispatchQueue.main.async { self.snap = s; self.refreshAnimation() }
+    }
+
+    // Main thread. The timer runs only while charging; any other state stops it completely and shows today's plain icon.
+    private func refreshAnimation() {
+        let charging = isCharging(snap)
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if charging && !reduced {
+            guard animTimer == nil else { return }
+            animTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 12, repeats: true) { [weak self] _ in
+                let f = sweepAmount(Date.timeIntervalSinceReferenceDate)
+                self?.anim = Anim(icon: 0.07 + 0.93 * f, bar: f)
+            }
+        } else {
+            animTimer?.invalidate(); animTimer = nil
+            anim = charging ? .still : Anim()
+        }
     }
 
     func setLimit(_ v: Int) { work.async { self.limit = clampLimit(v); UserDefaults.standard.set(self.limit, forKey: "limit"); self.step() } }
@@ -96,9 +126,9 @@ struct KeeperApp: App {  // started from main.swift
     @StateObject private var keeper = Keeper()
     var body: some Scene {
         MenuBarExtra {
-            Panel(s: keeper.snap, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, quit: keeper.quit))
+            Panel(s: keeper.snap, bar: keeper.anim.bar, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, quit: keeper.quit))
         } label: {
-            MenuBarLabel(level: keeper.snap.level)
+            MenuBarLabel(level: keeper.snap.level, fill: isCharging(keeper.snap) ? keeper.anim.icon : nil)
         }
         .menuBarExtraStyle(.window)
     }
@@ -106,7 +136,14 @@ struct KeeperApp: App {  // started from main.swift
 
 struct MenuBarLabel: View {
     let level: Int
-    var body: some View { HStack(spacing: 4) { Image(nsImage: shieldBattery); Text("\(level)%") } }
+    var fill: Double? = nil  // nil = not charging: the plain template icon
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(nsImage: fill.map { chargingIcon(fill: $0, dark: scheme == .dark) } ?? shieldBattery)
+            Text("\(level)%")
+        }
+    }
 }
 
 struct PanelActions {
@@ -118,9 +155,10 @@ struct PanelActions {
 
 struct Panel: View {
     let s: Snapshot
+    var bar = 0.0  // how much of the lighter "still to charge" stretch is drawn, 0...1
     let act: PanelActions
     @State private var draft: Double
-    init(s: Snapshot, act: PanelActions = PanelActions()) { self.s = s; self.act = act; _draft = State(initialValue: Double(s.limit)) }
+    init(s: Snapshot, bar: Double = 0, act: PanelActions = PanelActions()) { self.s = s; self.bar = bar; self.act = act; _draft = State(initialValue: Double(s.limit)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -129,7 +167,7 @@ struct Panel: View {
                 Spacer()
                 Text(statusText(s)).foregroundStyle(.secondary)
             }
-            if s.mode != .foreign { LevelBar(level: s.level, marker: s.mode == .holding ? s.limit : nil) }
+            if s.mode != .foreign { LevelBar(level: s.level, marker: s.mode == .holding ? s.limit : nil, stretch: isCharging(s) ? bar : 0) }
             switch s.mode {
             case .foreign:
                 Note(Text("Your Mac has its own charge limit turned on.").bold().foregroundColor(.orange)
@@ -165,6 +203,7 @@ struct Panel: View {
 struct LevelBar: View {
     let level: Int
     let marker: Int?
+    var stretch = 0.0
     var body: some View {
         GeometryReader { g in
             let w = g.size.width
@@ -172,6 +211,9 @@ struct LevelBar: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.secondary.opacity(0.35))
                     Rectangle().fill(Color.green).frame(width: w * CGFloat(min(100, max(0, level))) / 100)
+                    if let m = marker, m > level, stretch > 0 {
+                        Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(m - level) / 100 * stretch).offset(x: w * CGFloat(level) / 100)
+                    }
                 }.clipShape(Capsule())
                 if let m = marker { Rectangle().fill(Color.primary).frame(width: 2, height: 14).offset(x: w * CGFloat(m) / 100 - 1) }
             }

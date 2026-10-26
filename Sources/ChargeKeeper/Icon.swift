@@ -2,11 +2,17 @@
 // so macOS tints it for a light or a dark menu bar. The check mark is cut out of the shield.
 import AppKit
 
-let shieldBattery: NSImage = {
+// fill = nil: the plain icon. fill = 0...1: the charging picture, a green fill inside the battery behind the shield, in colour,
+// so the outline is drawn in `ink` (black or white to match the menu bar) instead of being tinted by macOS.
+func makeShieldBattery(fill: Double? = nil, ink: NSColor = .black, green: NSColor = .systemGreen) -> NSImage {
     let img = NSImage(size: NSSize(width: 22, height: 11), flipped: true) { _ in
         guard let cg = NSGraphicsContext.current?.cgContext else { return false }
         cg.scaleBy(x: 22.0 / 28.0, y: 22.0 / 28.0)
-        NSColor.black.set()
+        if let f = fill {
+            green.setFill()
+            NSBezierPath(roundedRect: NSRect(x: 1.8, y: 2.3, width: 20.4 * min(1, max(0, f)), height: 9.4), xRadius: 2.2, yRadius: 2.2).fill()
+        }
+        ink.set()
         let body = NSBezierPath(roundedRect: NSRect(x: 1, y: 1.5, width: 22, height: 11), xRadius: 3, yRadius: 3)
         body.lineWidth = 1.4
         body.stroke()
@@ -29,6 +35,19 @@ let shieldBattery: NSImage = {
         tick.stroke()
         return true
     }
-    img.isTemplate = true
+    img.isTemplate = fill == nil
     return img
-}()
+}
+
+let shieldBattery = makeShieldBattery()
+
+// The mockup's greens: the panel bar's green, a softer one on a dark menu bar.
+func chargingIcon(fill: Double, dark: Bool) -> NSImage {
+    makeShieldBattery(fill: fill, ink: dark ? .white : .black, green: dark ? NSColor(srgbRed: 0.275, green: 0.769, blue: 0.416, alpha: 1) : NSColor(srgbRed: 0.184, green: 0.659, blue: 0.31, alpha: 1))
+}
+
+// One 2 second round, as in the approved mockup: grows from a sliver to full over the first 80%, rests, starts over (ease in-out).
+func sweepAmount(_ t: Double) -> Double {
+    let x = min(1, (t.truncatingRemainder(dividingBy: 2)) / 2 / 0.8)
+    return x < 0.5 ? 2 * x * x : 1 - 2 * (1 - x) * (1 - x)
+}

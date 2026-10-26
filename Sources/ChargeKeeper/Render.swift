@@ -6,11 +6,13 @@ import AppKit
 private struct Stage: View {
     let snap: Snapshot
     let dark: Bool
+    var bar = 0.0
+    var fill: Double? = nil
     var body: some View {
         VStack(spacing: 8) {
-            HStack { Spacer(); MenuBarLabel(level: snap.level).padding(.horizontal, 6).padding(.vertical, 2).background(Color.gray.opacity(0.35), in: RoundedRectangle(cornerRadius: 5)); Text("Mon 9:41") }
+            HStack { Spacer(); MenuBarLabel(level: snap.level, fill: fill).padding(.horizontal, 6).padding(.vertical, 2).background(Color.gray.opacity(0.35), in: RoundedRectangle(cornerRadius: 5)); Text("Mon 9:41") }
                 .font(.system(size: 13)).padding(.horizontal, 12).frame(width: 340, height: 26).background(dark ? Color(white: 0.12, opacity: 0.6) : Color.white.opacity(0.55))
-            Panel(s: snap)
+            Panel(s: snap, bar: bar)
                 .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.14)))
                 .shadow(color: .black.opacity(0.25), radius: 10, y: 5)
@@ -40,7 +42,16 @@ private struct Stage: View {
     }
     // The icon alone, drawn 8 times larger, in the colour the menu bar would give it (black on light, white on dark).
     for dark in [false, true] {
-        ok = saveIcon(dark: dark, to: "\(dir)/icon-\(dark ? "dark" : "light").png") && ok
+        let tone = dark ? "dark" : "light"
+        ok = saveIcon(shieldBattery, dark: dark, to: "\(dir)/icon-\(tone).png") && ok
+        for (name, f) in [("sliver", 0.07), ("mid", 0.5), ("full", 1.0), ("reduce-motion", Anim.still.icon)] {
+            ok = saveIcon(chargingIcon(fill: f, dark: dark), dark: dark, to: "\(dir)/icon-charging-\(name)-\(tone).png") && ok
+        }
+        // The panel bar while charging (start, middle, end of a round), and the Reduce Motion still.
+        let charging = Snapshot(level: 62, plugged: true, charging: true, limit: 80, mode: .holding)
+        for (name, b) in [("start", 0.0), ("mid", 0.5), ("end", 1.0), ("reduce-motion", Anim.still.bar)] {
+            ok = save(Stage(snap: charging, dark: dark, bar: b, fill: Anim.still.icon), dark: dark, scale: 2, to: "\(dir)/panel-charging-\(name)-\(tone).png") && ok
+        }
     }
     return ok
 }
@@ -59,7 +70,7 @@ private struct Stage: View {
     return true
 }
 
-@MainActor private func saveIcon(dark: Bool, to path: String) -> Bool {
+@MainActor private func saveIcon(_ icon: NSImage, dark: Bool, to path: String) -> Bool {
     let w = 240, h = 128
     func newRep() -> NSBitmapImageRep? {
         NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
@@ -69,9 +80,11 @@ private struct Stage: View {
     let all = NSRect(x: 0, y: 0, width: w, height: h)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = mctx
-    shieldBattery.draw(in: box)  // black, with the check cut out
-    (dark ? NSColor.white : NSColor.black).setFill()
-    all.fill(using: .sourceIn)  // keeps the shape, changes the colour
+    icon.draw(in: box)
+    if icon.isTemplate {  // a template is tinted by macOS: black on a light bar, white on a dark one
+        (dark ? NSColor.white : NSColor.black).setFill()
+        all.fill(using: .sourceIn)
+    }
     NSGraphicsContext.restoreGraphicsState()
     guard let shape = mask.cgImage, let cg = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
     cg.setFillColor(gray: dark ? 0.15 : 0.93, alpha: 1)
