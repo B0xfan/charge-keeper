@@ -52,17 +52,18 @@ default:
     // -ApplePersistenceIgnoreState, ... added by macOS, open or a debugger) are ignored. The lock is the check: a copy started
     // from a terminal is not always listed as a running app yet. O_CLOEXEC: the watchdog must not inherit it and hold it after the app dies.
     func leave(_ why: String, _ code: Int32) -> Never { FileHandle.standardError.write(Data("Charge Keeper: \(why)\n".utf8)); exit(code) }
-    if let bad = args.dropFirst().first(where: { $0.hasPrefix("--") }) {
+    let known: Set = ["-watchdog", "-selftest", "-render", "-probe", "-restore"]  // single-dash typos of our own flags
+    if let bad = args.dropFirst().first(where: { $0.hasPrefix("--") || known.contains($0) }) {
         leave("unknown option \(bad). Usage: ChargeKeeper (no arguments) | --selftest | --probe | --restore | --render <folder>", 2)
     }
     let lockDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Charge Keeper")
     try? FileManager.default.createDirectory(at: lockDir, withIntermediateDirectories: true)
     // Must stay a top-level constant: the lock is held for as long as this descriptor stays open, i.e. until the app exits.
     let lockFd = open(lockDir.appendingPathComponent("app.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
-    if lockFd >= 0 {
-        if flock(lockFd, LOCK_EX | LOCK_NB) != 0 { leave("already running, this copy exits", 0) }
-    } else if let id = Bundle.main.bundleIdentifier, NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 {
-        // No lock file: fall back to the running-app list. If that check is wrong we still start, so there is always an app at login.
+    let locked = lockFd >= 0 && flock(lockFd, LOCK_EX | LOCK_NB) == 0
+    if !locked && lockFd >= 0 && errno == EWOULDBLOCK { leave("already running, this copy exits", 0) }
+    if !locked, let id = Bundle.main.bundleIdentifier, NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 {
+        // No usable lock (open or flock failed for another reason): fall back to the running-app list. If that check is wrong we still start, so there is always an app at login.
         leave("already running, this copy exits", 0)
     }
     KeeperApp.main()
