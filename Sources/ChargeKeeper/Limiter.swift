@@ -13,6 +13,7 @@ final class Limiter {
     private let lock = NSLock()
     private var orig: LimitState?  // the setting before we touched it; non-nil exactly while we own the limit
     private var watchdog: pid_t = 0
+    private var closed = false  // set by the final release at exit, so a late timer tick cannot take the limit again
     init(_ m: MCL) { self.m = m }
 
     // A note left by an earlier run means that run died with the limit on: put it back. No note = not ours, never touched.
@@ -25,6 +26,7 @@ final class Limiter {
     // Holds the limit at `target`. Cheap when it already holds.
     func apply(_ target: Int) -> Applied {
         lock.lock(); defer { lock.unlock() }
+        guard !closed else { return .failed("Charge Keeper is closing.") }
         guard m.supported else { return .unsupported }
         guard let cur = m.state() else { return .failed("Could not read the Mac's charge limit.") }
         if orig == nil {
@@ -41,8 +43,9 @@ final class Limiter {
     }
 
     // Safe to call from anywhere, any number of times. True when nothing of ours is left on.
-    @discardableResult func release() -> Bool {
+    @discardableResult func release(final: Bool = false) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        if final { closed = true }
         return releaseLocked()
     }
 
@@ -90,11 +93,11 @@ var signalSources: [DispatchSourceSignal] = []
 
 func installExitSafety(_ l: Limiter) {
     activeLimiter = l
-    atexit { _ = activeLimiter?.release() }  // covers the Quit button too: terminate() ends in exit()
+    atexit { _ = activeLimiter?.release(final: true) }  // covers the Quit button too: terminate() ends in exit()
     for sig in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
         signal(sig, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.global())
-        src.setEventHandler { _ = activeLimiter?.release(); exit(0) }
+        src.setEventHandler { _ = activeLimiter?.release(final: true); exit(0) }
         src.resume()
         signalSources.append(src)
     }
@@ -105,5 +108,7 @@ func runWatchdog(_ args: [String]) -> Never {
     guard args.count == 4, let parent = pid_t(args[2]), let lim = Int(args[3]), let m = MCL() else { exit(2) }
     write(1, "r", 1)
     while getppid() == parent { usleep(300_000) }  // getppid changes when the parent dies, even as a zombie
-    exit(restore(m, LimitState(enabled: false, limit: lim), tries: 20) ? 0 : 1)
+    let ok = restore(m, LimitState(enabled: false, limit: lim), tries: 20)
+    if ok { try? FileManager.default.removeItem(at: markerURL) }  // put back: the note must not outlive it, or the next start would undo a limit John sets later
+    exit(ok ? 0 : 1)
 }

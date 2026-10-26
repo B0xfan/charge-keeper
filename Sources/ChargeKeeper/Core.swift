@@ -7,8 +7,6 @@ import IOKit
 
 struct LimitState: Equatable {
     var enabled: Bool; var limit: Int
-    // A switched-off limit has no meaningful level, so only "off" is compared then.
-    func matches(_ o: LimitState?) -> Bool { o != nil && enabled == o!.enabled && (!enabled || limit == o!.limit) }
 }
 typealias Err = UnsafeMutablePointer<Unmanaged<AnyObject>?>?
 
@@ -26,20 +24,15 @@ final class MCL {
     private func imp<T>(_ s: String, _ t: T.Type) -> T {
         unsafeBitCast(class_getMethodImplementation(object_getClass(obj), Selector((s))), to: t)
     }
-    var lastError = ""
-    private func err(_ e: Unmanaged<AnyObject>?) { lastError = e.map { "\($0.takeUnretainedValue())" } ?? "" }
-
     var supported: Bool { imp("isMCLSupported", (@convention(c) (AnyObject, Selector) -> Bool).self)(obj, Selector(("isMCLSupported"))) }
     func enabled() -> Bool? {
         var e: Unmanaged<AnyObject>? = nil
         let v = imp("isMCLCurrentlyEnabled:", (@convention(c) (AnyObject, Selector, Err) -> UInt8).self)(obj, Selector(("isMCLCurrentlyEnabled:")), &e)  // low byte only: a 1-byte BOOL leaves the upper bits undefined
-        err(e)
         return e == nil ? v != 0 : nil
     }
     func limit() -> Int? {
         var e: Unmanaged<AnyObject>? = nil
         let v = imp("getMCLLimitWithError:", (@convention(c) (AnyObject, Selector, Err) -> UInt8).self)(obj, Selector(("getMCLLimitWithError:")), &e)
-        err(e)
         return e == nil ? Int(v) : nil
     }
     func state() -> LimitState? {
@@ -47,10 +40,9 @@ final class MCL {
         return LimitState(enabled: e, limit: l)
     }
     @discardableResult func setLimit(_ pct: Int) -> Bool {
-        guard (1...100).contains(pct), let level = UInt8(exactly: pct) else { lastError = "limit \(pct) is outside 1...100"; return false }
+        guard (1...100).contains(pct), let level = UInt8(exactly: pct) else { return false }
         var e: Unmanaged<AnyObject>? = nil
         let ok = imp("setMCLLimit:error:", (@convention(c) (AnyObject, Selector, UInt8, Err) -> Bool).self)(obj, Selector(("setMCLLimit:error:")), level, &e)
-        err(e)
         return ok
     }
     @discardableResult func enable() -> Bool { toggle("enableMCL:") }
@@ -58,7 +50,6 @@ final class MCL {
     private func toggle(_ s: String) -> Bool {
         var e: Unmanaged<AnyObject>? = nil
         let ok = imp(s, (@convention(c) (AnyObject, Selector, Err) -> Bool).self)(obj, Selector((s)), &e)
-        err(e)
         return ok
     }
 }
@@ -66,7 +57,7 @@ final class MCL {
 // Puts the setting back to `orig` and checks by reading, retrying. Safe to call any number of times.
 func restore(_ m: MCL, _ orig: LimitState, tries: Int = 5) -> Bool {
     for _ in 0..<tries {
-        // Done only if the level is back too: a half-applied change can leave "off" with 89 stored, which matches() alone accepts.
+        // Done only if the level is back too: a half-applied change can leave "off" with 89 stored, which a switch-only check would accept.
         if m.state() == orig { return true }
         m.setLimit(orig.limit)
         if orig.enabled { m.enable() } else { m.disable() }

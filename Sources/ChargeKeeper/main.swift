@@ -3,13 +3,11 @@
 //   --probe      read-only: is the limit supported, on or off, which level
 //   --selftest   pure logic checks, no hardware
 import Foundation
+import AppKit
 
 func selftest() -> Int32 {
     var bad = 0
     func expect(_ c: Bool, _ n: String) { if !c { print("FAIL \(n)"); bad += 1 } }
-    let off = LimitState(enabled: false, limit: 100)
-    expect(LimitState(enabled: false, limit: 90).matches(off) && !LimitState(enabled: true, limit: 100).matches(off), "off compares only the switch")
-    expect(LimitState(enabled: true, limit: 90).matches(LimitState(enabled: true, limit: 90)) && !LimitState(enabled: true, limit: 85).matches(LimitState(enabled: true, limit: 90)), "on compares the level")
     expect(clampLimit(80) == 80 && clampLimit(83) == 80 && clampLimit(10) == 50 && clampLimit(150) == 100 && clampLimit(-5) == 50, "limit snaps to steps of 5 inside 50...100")
     let hold = Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding)
     expect(statusText(hold) == "Holding at 80%", "holding at the limit")
@@ -39,5 +37,8 @@ case "--restore":
     if ok { try? FileManager.default.removeItem(at: markerURL) }
     print("restore: \(ok) state=\(String(describing: m.state()))")
     exit(ok ? 0 : 1)
-default: KeeperApp.main()
+default:
+    // A second copy would switch off the first copy's live limit at start-up, so it just leaves.
+    if let id = Bundle.main.bundleIdentifier, NSRunningApplication.runningApplications(withBundleIdentifier: id).count > 1 { exit(0) }
+    KeeperApp.main()
 }
