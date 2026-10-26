@@ -118,7 +118,8 @@ func pmsetLine() -> String {
 }
 
 func waitFor(_ seconds: Int, _ cond: () -> Bool) -> Bool {
-    for _ in 0..<(seconds / 2 + 1) {
+    let end = Date().addingTimeInterval(TimeInterval(seconds))  // wall clock, so slow reads cannot stretch it past the watchdog deadline
+    while Date() < end {
         if cond() { return true }
         sleep(2)
     }
@@ -255,12 +256,12 @@ func runTest(target: Int, try89: Bool) -> Int32 {
     }
 
     // A: set, observe, restore, observe
-    guard hold.engage(target: target, deadline: 900) else {
+    guard hold.engage(target: target, deadline: 7500) else {
         print("FAIL could not set the limit (\(m.lastError)); restored: \(restore(m, orig))"); return 1
     }
     check("A0 limit set and read back", m.state() == State(enabled: true, limit: target), "state=\(String(describing: m.state()))")
-    // Below the target the Mac keeps charging up to it first, so allow about 90 s per point of gap (the watchdog's 900 s still covers it).
-    let stopped = waitFor(min(600, 90 + 90 * (target - level))) { battery().charging == false }
+    // Below the target the Mac keeps charging up to it first, so allow about 500 s per point of gap (the Mac gains ~1 point per 7 min), capped at 2 h; the watchdog's 7500 s covers it.
+    let stopped = waitFor(min(7200, 300 + 500 * (target - level))) { let b = battery(); return b.charging == false && b.external == true }
     check("A1 charging stopped after the limit was set", stopped, "\(battery().text) | \(pmsetLine())")
     // C: a fresh tool process sees the same setting (the macOS service keeps it, not this tool)
     let probeOut = run([selfPath(), "probe"])
