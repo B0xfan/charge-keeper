@@ -43,10 +43,14 @@ private struct Stage: View {
     // The icon alone, drawn 8 times larger, in the colour the menu bar would give it (black on light, white on dark).
     for dark in [false, true] {
         let tone = dark ? "dark" : "light"
-        ok = saveIcon(shieldBattery, dark: dark, to: "\(dir)/icon-\(tone).png") && ok
-        for (name, f) in [("sliver", iconFill(0)), ("mid", 0.5), ("full", 1.0), ("reduce-motion", iconFill(stillSweep))] {
-            ok = saveIcon(chargingIcon(fill: f, dark: dark), dark: dark, to: "\(dir)/icon-charging-\(name)-\(tone).png") && ok
+        for (name, lv) in [("9", 9), ("54-on-battery", 54), ("62", 62), ("80-holding", 80), ("100", 100)] {
+            ok = saveIcon(makeBattery(level: lv), dark: dark, to: "\(dir)/icon-\(name)-\(tone).png") && ok
         }
+        for (name, f) in [("sliver", iconFill(0)), ("mid", 0.5), ("full", 1.0), ("reduce-motion", iconFill(stillSweep))] {
+            ok = saveIcon(chargingIcon(level: 62, fill: f, dark: dark), dark: dark, to: "\(dir)/icon-charging-\(name)-\(tone).png") && ok
+        }
+        ok = saveIcon(chargingIcon(level: 100, fill: 0.5, dark: dark), dark: dark, to: "\(dir)/icon-charging-100-\(tone).png") && ok
+        ok = saveIcon(chargingIcon(level: 9, fill: 0.5, dark: dark), dark: dark, to: "\(dir)/icon-charging-9-\(tone).png") && ok
         // The panel bar while charging (start, middle, end of a round), and the Reduce Motion still.
         let charging = Snapshot(level: 62, plugged: true, charging: true, limit: 80, mode: .holding)
         for (name, b) in [("start", 0.0), ("mid", 0.5), ("end", 1.0), ("reduce-motion", stillSweep)] {
@@ -71,12 +75,12 @@ private struct Stage: View {
 }
 
 @MainActor private func saveIcon(_ icon: NSImage, dark: Bool, to path: String) -> Bool {
-    let w = 240, h = 128
+    let w = 300, h = 150
     func newRep() -> NSBitmapImageRep? {
         NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
     }
     guard let mask = newRep(), let mctx = NSGraphicsContext(bitmapImageRep: mask) else { return false }
-    let box = NSRect(x: 32, y: 20, width: 176, height: 88)  // the 22 x 11 icon, 8 times larger
+    let box = NSRect(x: 30, y: 15, width: 240, height: 120)  // the 30 x 15 icon, 8 times larger
     let all = NSRect(x: 0, y: 0, width: w, height: h)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = mctx

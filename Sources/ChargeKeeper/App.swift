@@ -146,10 +146,7 @@ struct MenuBarLabel: View {
     @Environment(\.colorScheme) private var scheme
     @State private var barDark: Bool?  // the real menu bar's look (it can differ from the app's: light mode, dark wallpaper)
     var body: some View {
-        HStack(spacing: 4) {
-            Image(nsImage: fill.map { chargingIcon(fill: $0, dark: barDark ?? (scheme == .dark)) } ?? shieldBattery)
-            Text("\(level)%")
-        }
+        Image(nsImage: fill.map { chargingIcon(level: level, fill: $0, dark: barDark ?? (scheme == .dark)) } ?? makeBattery(level: level))
         .background(BarAppearance(dark: $barDark))
     }
 }
