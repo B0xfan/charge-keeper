@@ -60,7 +60,7 @@ final class MCL {
         return State(enabled: e, limit: l)
     }
     @discardableResult func setLimit(_ pct: Int) -> Bool {
-        guard let level = UInt8(exactly: pct) else { return false }
+        guard (1...100).contains(pct), let level = UInt8(exactly: pct) else { lastError = "limit \(pct) is outside 1...100"; return false }
         var e: Unmanaged<AnyObject>? = nil
         let ok = imp("setMCLLimit:error:", (@convention(c) (AnyObject, Selector, UInt8, Err) -> Bool).self)(obj, Selector(("setMCLLimit:error:")), level, &e)
         err(e)
@@ -176,7 +176,7 @@ final class Hold {
         var pfd = pollfd(fd: fds[0], events: Int16(POLLIN), revents: 0)
         var byte: UInt8 = 0
         guard poll(&pfd, 1, 5000) == 1, read(fds[0], &byte, 1) == 1, byte == UInt8(ascii: "r") else {
-            kill(pid, SIGKILL); watchdog = 0; return false
+            kill(pid, SIGKILL); waitpid(pid, nil, 0); watchdog = 0; return false
         }
         // Held for the whole change, so a signal's release() waits and then restores everything.
         lock.lock(); defer { lock.unlock() }
@@ -258,7 +258,8 @@ func runTest(target: Int, try89: Bool) -> Int32 {
         print("FAIL could not set the limit (\(m.lastError)); restored: \(restore(m, orig))"); return 1
     }
     check("A0 limit set and read back", m.state() == State(enabled: true, limit: target), "state=\(String(describing: m.state()))")
-    let stopped = waitFor(90) { battery().charging == false }
+    // Below the target the Mac keeps charging up to it first, so allow about 90 s per point of gap (the watchdog's 900 s still covers it).
+    let stopped = waitFor(min(600, 90 + 90 * (target - level))) { battery().charging == false }
     check("A1 charging stopped after the limit was set", stopped, "\(battery().text) | \(pmsetLine())")
     // C: a fresh tool process sees the same setting (the macOS service keeps it, not this tool)
     let probeOut = run([selfPath(), "probe"])
@@ -342,7 +343,7 @@ case "hold":  // internal: used by the kill test. args = target, seconds
     print("held")
     // Leave as soon as the test process that started us is gone, so a killed test does not keep the limit up.
     let owner = getppid()
-    for _ in 0..<(args.count > 3 ? Int(args[3]) ?? 30 : 30) where getppid() == owner { sleep(1) }
+    for _ in 0..<(args.count > 3 ? Int(args[3]) ?? 30 : 30) where owner != 1 && getppid() == owner { sleep(1) }
     exit(hold.release() ? 0 : 1)
 case "watchdog":  // internal: args = parent pid, deadline seconds, original enabled (0/1), original limit
     guard args.count == 6, let parent = pid_t(args[2]), let deadline = Int(args[3]), let lim = Int(args[5]), let m = MCL() else { exit(2) }
