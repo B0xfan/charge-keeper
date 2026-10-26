@@ -45,7 +45,7 @@ struct KeyInfo { let size: Int; let type: String }
 final class SMC {
     private var conn: io_connect_t = 0
     init?() {
-        let svc = IOServiceGetMatchingService(kIOMainPortID, IOServiceMatching("AppleSMC"))
+        let svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleSMC"))
         guard svc != 0 else { return nil }
         defer { IOObjectRelease(svc) }
         guard IOServiceOpen(svc, mach_task_self_, 0, &conn) == KERN_SUCCESS else { return nil }
@@ -130,7 +130,7 @@ struct Battery {
     }
 }
 func battery() -> Battery {
-    let svc = IOServiceGetMatchingService(kIOMainPortID, IOServiceMatching("AppleSmartBattery"))
+    let svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"))
     guard svc != 0 else { return Battery() }
     defer { IOObjectRelease(svc) }
     func p(_ k: String) -> NSNumber? { IORegistryEntryCreateCFProperty(svc, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber }
@@ -171,9 +171,11 @@ func spawnDetached(_ args: [String]) -> pid_t? {
     posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0)
     var cargs: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
     cargs.append(nil)
-    defer { cargs.forEach { free($0) } }
+    var envp: [UnsafeMutablePointer<CChar>?] = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") }
+    envp.append(nil)
+    defer { cargs.forEach { free($0) }; envp.forEach { free($0) } }
     var pid: pid_t = 0
-    let rc = posix_spawn(&pid, args[0], &fa, &attr, cargs, _NSGetEnviron().pointee)
+    let rc = posix_spawn(&pid, args[0], &fa, &attr, cargs, envp)
     return rc == 0 ? pid : nil
 }
 
