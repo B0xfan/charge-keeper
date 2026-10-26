@@ -79,18 +79,20 @@ final class MCL {
 // Puts the setting back to `orig` and checks by reading, retrying. Safe to call any number of times.
 func restore(_ m: MCL, _ orig: State, tries: Int = 5) -> Bool {
     for _ in 0..<tries {
-        if let s = m.state(), s.matches(orig) { return true }
+        // Done only if the level is back too: a half-applied change can leave "off" with 89 stored, which matches() alone accepts.
+        if m.state() == orig { return true }
         m.setLimit(orig.limit)
         if orig.enabled { m.enable() } else { m.disable() }
-        if let s = m.state(), s.matches(orig) { return true }
+        if m.state() == orig { return true }
         sleep(1)
     }
     return false
 }
 
-// Pure decision: only touch a Mac whose limit is supported, currently off, and where the target is an offered step.
-func canEngage(supported: Bool, state: State?, available: [Int], target: Int) -> Bool {
-    supported && state?.enabled == false && available.contains(target)
+// Pure decision: only touch a Mac whose limit is supported and currently off. The target need not be an offered step
+// (macOS accepted 89 on this Mac); engage() reads the level back and undoes the change if it did not take.
+func canEngage(supported: Bool, state: State?, target: Int) -> Bool {
+    supported && state?.enabled == false && (1...100).contains(target)
 }
 
 // MARK: - battery state
@@ -230,9 +232,8 @@ func describe(_ m: MCL) -> State? {
 func runTest(target: Int, try89: Bool) -> Int32 {
     guard let m = MCL() else { print("PowerUI client could not be created. Nothing was changed."); return 1 }
     let st = describe(m)
-    let avail = m.available()
-    guard canEngage(supported: m.supported, state: st, available: avail, target: target), let orig = st else {
-        print("RESULT: limit unsupported, already on, or \(target) is not an offered step. Nothing was changed.")
+    guard canEngage(supported: m.supported, state: st, target: target), let orig = st else {
+        print("RESULT: limit unsupported, already on, or \(target) is out of range. Nothing was changed.")
         return 1
     }
     let b0 = battery()
@@ -268,9 +269,10 @@ func runTest(target: Int, try89: Bool) -> Int32 {
         let ok = m.setLimit(89)
         print("INFO try89: setMCLLimit(89) returned \(ok) error='\(m.lastError)' readback=\(String(describing: m.state()))")
     }
-    check("A3 restore verified by reading", hold.release(), "state=\(String(describing: m.state()))")
+    let released = hold.release()
+    check("A3 restore verified by reading", released, "state=\(String(describing: m.state()))")
     check("A4 charging resumed after restore", waitFor(120) { battery().charging == true }, "\(battery().text) | \(pmsetLine())")
-    currentHold = nil
+    if released { currentHold = nil }  // a failed restore stays armed for the exit/signal handlers
 
     // B: the tool is killed hard while the limit is set
     let child = Process()
@@ -283,12 +285,12 @@ func runTest(target: Int, try89: Bool) -> Int32 {
     check("B1 second process is holding the limit", line.contains("held") && m.state() == State(enabled: true, limit: target))
     kill(child.processIdentifier, SIGKILL)
     child.waitUntilExit()
-    let restored = waitFor(10) { m.state()?.matches(orig) == true }
+    let restored = waitFor(10) { m.state() == orig }
     check("B2 after kill -9 the watchdog put the limit back", restored)
     if !restored { print("emergency restore: \(restore(m, orig))") }
     check("B3 charging resumed after kill -9", waitFor(120) { battery().charging == true }, "\(battery().text) | \(pmsetLine())")
 
-    let finalOK = m.state()?.matches(orig) == true
+    let finalOK = m.state() == orig
     print("FINAL: setting at original (\(orig)): \(finalOK); battery \(battery().text)")
     print("RESULT: \(failures == 0 && finalOK ? "PROVEN" : "NOT PROVEN") (sleep/wake: not tested)")
     return failures == 0 && finalOK ? 0 : 1
@@ -307,11 +309,12 @@ func selftest() -> Int32 {
     var bad = 0
     func expect(_ c: Bool, _ n: String) { if !c { print("FAIL \(n)"); bad += 1 } }
     let off = State(enabled: false, limit: 100)
-    expect(canEngage(supported: true, state: off, available: [80, 90, 100], target: 90), "off + offered step is allowed")
-    expect(!canEngage(supported: true, state: off, available: [80, 90, 100], target: 89), "unoffered step refused")
-    expect(!canEngage(supported: true, state: State(enabled: true, limit: 90), available: [90], target: 90), "already on refused")
-    expect(!canEngage(supported: false, state: off, available: [90], target: 90), "unsupported refused")
-    expect(!canEngage(supported: true, state: nil, available: [90], target: 90), "unreadable state refused")
+    expect(canEngage(supported: true, state: off, target: 90), "off + in-range target is allowed")
+    expect(canEngage(supported: true, state: off, target: 89), "non-offered step is allowed")
+    expect(!canEngage(supported: true, state: off, target: 0) && !canEngage(supported: true, state: off, target: 101), "out of range refused")
+    expect(!canEngage(supported: true, state: State(enabled: true, limit: 90), target: 90), "already on refused")
+    expect(!canEngage(supported: false, state: off, target: 90), "unsupported refused")
+    expect(!canEngage(supported: true, state: nil, target: 90), "unreadable state refused")
     expect(State(enabled: false, limit: 90).matches(off) && !State(enabled: true, limit: 100).matches(off), "off compares only the switch")
     expect(State(enabled: true, limit: 90).matches(State(enabled: true, limit: 90)) && !State(enabled: true, limit: 85).matches(State(enabled: true, limit: 90)), "on compares the level")
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
@@ -335,7 +338,7 @@ case "restore":
     exit(ok ? 0 : 1)
 case "hold":  // internal: used by the kill test. args = target, seconds
     guard args.count > 2, let target = Int(args[2]), let m = MCL(), let orig = m.state(),
-          canEngage(supported: m.supported, state: orig, available: m.available(), target: target) else { print("refused"); exit(1) }
+          canEngage(supported: m.supported, state: orig, target: target) else { print("refused"); exit(1) }
     installExitSafety()
     let hold = Hold(m, orig)
     currentHold = hold
