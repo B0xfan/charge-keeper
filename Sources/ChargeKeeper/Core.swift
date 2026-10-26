@@ -5,10 +5,10 @@ import IOKit
 
 // MARK: - PowerUI client (private framework, reached by method address because it has no public header)
 
-struct State: Equatable {
+struct LimitState: Equatable {
     var enabled: Bool; var limit: Int
     // A switched-off limit has no meaningful level, so only "off" is compared then.
-    func matches(_ o: State?) -> Bool { o != nil && enabled == o!.enabled && (!enabled || limit == o!.limit) }
+    func matches(_ o: LimitState?) -> Bool { o != nil && enabled == o!.enabled && (!enabled || limit == o!.limit) }
 }
 typealias Err = UnsafeMutablePointer<Unmanaged<AnyObject>?>?
 
@@ -42,9 +42,9 @@ final class MCL {
         err(e)
         return e == nil ? Int(v) : nil
     }
-    func state() -> State? {
+    func state() -> LimitState? {
         guard let e = enabled(), let l = limit() else { return nil }
-        return State(enabled: e, limit: l)
+        return LimitState(enabled: e, limit: l)
     }
     @discardableResult func setLimit(_ pct: Int) -> Bool {
         guard (1...100).contains(pct), let level = UInt8(exactly: pct) else { lastError = "limit \(pct) is outside 1...100"; return false }
@@ -64,7 +64,7 @@ final class MCL {
 }
 
 // Puts the setting back to `orig` and checks by reading, retrying. Safe to call any number of times.
-func restore(_ m: MCL, _ orig: State, tries: Int = 5) -> Bool {
+func restore(_ m: MCL, _ orig: LimitState, tries: Int = 5) -> Bool {
     for _ in 0..<tries {
         // Done only if the level is back too: a half-applied change can leave "off" with 89 stored, which matches() alone accepts.
         if m.state() == orig { return true }

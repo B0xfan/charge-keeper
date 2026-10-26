@@ -11,7 +11,7 @@ let markerURL = FileManager.default.urls(for: .applicationSupportDirectory, in: 
 final class Limiter {
     private let m: MCL
     private let lock = NSLock()
-    private var orig: State?  // the setting before we touched it; non-nil exactly while we own the limit
+    private var orig: LimitState?  // the setting before we touched it; non-nil exactly while we own the limit
     private var watchdog: pid_t = 0
     init(_ m: MCL) { self.m = m }
 
@@ -19,7 +19,7 @@ final class Limiter {
     func clearLeftover() {
         guard let text = try? String(contentsOf: markerURL) else { return }
         let lim = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 100
-        if restore(m, State(enabled: false, limit: lim)) { try? FileManager.default.removeItem(at: markerURL) }
+        if restore(m, LimitState(enabled: false, limit: lim)) { try? FileManager.default.removeItem(at: markerURL) }
     }
 
     // Holds the limit at `target`. Cheap when it already holds.
@@ -31,12 +31,12 @@ final class Limiter {
             guard !cur.enabled else { return .foreign }  // the Mac's own limit (or another app's) is on: do not fight it
             guard startWatchdog(cur) else { return .failed("Could not start the safety watchdog, so nothing was changed.") }
             orig = cur
-        } else if cur == State(enabled: true, limit: target) {
+        } else if cur == LimitState(enabled: true, limit: target) {
             return .ok
         }
         guard m.setLimit(target) else { return fail("macOS refused the limit \(target)%") }
         if m.enabled() != true { m.enable() }  // setting the level may already switch it on
-        guard m.state() == State(enabled: true, limit: target) else { return fail("macOS did not keep the limit \(target)%") }
+        guard m.state() == LimitState(enabled: true, limit: target) else { return fail("macOS did not keep the limit \(target)%") }
         return .ok
     }
 
@@ -61,7 +61,7 @@ final class Limiter {
     }
 
     // The watchdog says "r" once its own PowerUI client works; no "r" (it died or hung) means no change is made.
-    private func startWatchdog(_ o: State) -> Bool {
+    private func startWatchdog(_ o: LimitState) -> Bool {
         var fds: [Int32] = [0, 0]
         guard pipe(&fds) == 0 else { return false }
         let pid = spawnDetached([selfPath(), "--watchdog", String(getpid()), String(o.limit)], stdoutFd: fds[1])
@@ -105,5 +105,5 @@ func runWatchdog(_ args: [String]) -> Never {
     guard args.count == 4, let parent = pid_t(args[2]), let lim = Int(args[3]), let m = MCL() else { exit(2) }
     write(1, "r", 1)
     while getppid() == parent { usleep(300_000) }  // getppid changes when the parent dies, even as a zombie
-    exit(restore(m, State(enabled: false, limit: lim), tries: 20) ? 0 : 1)
+    exit(restore(m, LimitState(enabled: false, limit: lim), tries: 20) ? 0 : 1)
 }

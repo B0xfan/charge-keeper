@@ -7,9 +7,9 @@ import Foundation
 func selftest() -> Int32 {
     var bad = 0
     func expect(_ c: Bool, _ n: String) { if !c { print("FAIL \(n)"); bad += 1 } }
-    let off = State(enabled: false, limit: 100)
-    expect(State(enabled: false, limit: 90).matches(off) && !State(enabled: true, limit: 100).matches(off), "off compares only the switch")
-    expect(State(enabled: true, limit: 90).matches(State(enabled: true, limit: 90)) && !State(enabled: true, limit: 85).matches(State(enabled: true, limit: 90)), "on compares the level")
+    let off = LimitState(enabled: false, limit: 100)
+    expect(LimitState(enabled: false, limit: 90).matches(off) && !LimitState(enabled: true, limit: 100).matches(off), "off compares only the switch")
+    expect(LimitState(enabled: true, limit: 90).matches(LimitState(enabled: true, limit: 90)) && !LimitState(enabled: true, limit: 85).matches(LimitState(enabled: true, limit: 90)), "on compares the level")
     expect(clampLimit(80) == 80 && clampLimit(83) == 80 && clampLimit(10) == 50 && clampLimit(150) == 100 && clampLimit(-5) == 50, "limit snaps to steps of 5 inside 50...100")
     let hold = Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding)
     expect(statusText(hold) == "Holding at 80%", "holding at the limit")
@@ -35,7 +35,7 @@ case "--probe":
     print("mcl: supported=\(m.supported) enabled=\(st.map { "\($0.enabled)" } ?? "?") limit=\(st.map { "\($0.limit)" } ?? "?")")
 case "--restore":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(2) }
-    let ok = restore(m, State(enabled: false, limit: 100))
+    let ok = restore(m, LimitState(enabled: false, limit: 100))
     if ok { try? FileManager.default.removeItem(at: markerURL) }
     print("restore: \(ok) state=\(String(describing: m.state()))")
     exit(ok ? 0 : 1)
