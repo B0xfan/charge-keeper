@@ -80,12 +80,12 @@ private struct Stage: View {
 }
 
 @MainActor private func saveIcon(_ icon: NSImage, dark: Bool, scale k: Int = 8, to path: String) -> Bool {
-    let w = 38 * k, h = 23 * k
+    let w = 300 * k / 8, h = 150 * k / 8  // k = 8: the 300 x 150 canvas of the approved pictures
     func newRep() -> NSBitmapImageRep? {
         NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
     }
     guard let mask = newRep(), let mctx = NSGraphicsContext(bitmapImageRep: mask) else { return false }
-    let box = NSRect(x: 4 * k, y: 4 * k, width: 30 * k, height: 15 * k)  // the 30 x 15 icon, k times larger
+    let box = NSRect(x: 30 * k / 8, y: 15 * k / 8, width: 30 * k, height: 15 * k)  // the 30 x 15 icon, k times larger
     let all = NSRect(x: 0, y: 0, width: w, height: h)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = mctx

@@ -8,6 +8,18 @@ import AppKit
 
 private func s0(charging: Bool, level: Int, plugged: Bool = true) -> Snapshot { Snapshot(level: level, plugged: plugged, charging: charging, limit: 80, mode: .holding) }
 
+// The outline colour of one liveChargingIcon image drawn under the given appearance (white ink on dark, black on light).
+@MainActor func inkRed(_ name: NSAppearance.Name) -> CGFloat {
+    let img = liveChargingIcon(level: 62, fill: 0.5)
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 60, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return -1 }
+    rep.size = NSSize(width: 30, height: 15)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSAppearance(named: name)!.performAsCurrentDrawingAppearance { img.draw(in: NSRect(x: 0, y: 0, width: 30, height: 15)) }
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.colorAt(x: 115, y: 30)?.redComponent ?? -1  // the middle of the battery tip, which is solid ink
+}
+
 func selftest() -> Int32 {
     var bad = 0
     func expect(_ c: Bool, _ n: String) { if !c { print("FAIL \(n)"); bad += 1 } }
@@ -27,6 +39,7 @@ func selftest() -> Int32 {
     expect(!shouldRegisterLoginItem(path: "/Users/x/charge-keeper/build/Charge Keeper.app", asked: false), "login item: never for a build-folder copy")
     expect(isCharging(s0(charging: true, level: 62)) && !isCharging(s0(charging: true, level: 80)) && !isCharging(s0(charging: false, level: 62)) && !isCharging(s0(charging: true, level: 62, plugged: false)), "animation only while really charging")
     expect(sweepAmount(0) == 0 && sweepAmount(1.6) == 1 && sweepAmount(1.9) == 1 && sweepAmount(0.8) > sweepAmount(0.4) && abs(sweepAmount(0.8) - 0.5) < 1e-9, "sweep grows, rests, restarts")
+    expect(MainActor.assumeIsolated { inkRed(.darkAqua) > 0.8 && inkRed(.aqua) < 0.2 }, "menu-bar charging picture follows the drawing appearance (one image, drawn twice)")
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
     return bad == 0 ? 0 : 1
 }

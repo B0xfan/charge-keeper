@@ -35,6 +35,15 @@ func chargingIcon(level: Int, fill: Double, dark: Bool) -> NSImage {
     makeBattery(level: level, fill: fill, ink: dark ? .white : .black, green: dark ? NSColor(srgbRed: 0.275, green: 0.769, blue: 0.416, alpha: 1) : NSColor(srgbRed: 0.184, green: 0.659, blue: 0.31, alpha: 1))
 }
 
+// For the menu bar: the light/dark tone is picked each time macOS draws the picture, so an appearance change (light/dark mode,
+// a wallpaper that flips the bar) repaints it correctly even while the animation is stopped (Reduce Motion, screens asleep).
+func liveChargingIcon(level: Int, fill: Double) -> NSImage {
+    NSImage(size: NSSize(width: 30, height: 15), flipped: false) { r in
+        chargingIcon(level: level, fill: fill, dark: NSAppearance.currentDrawing().bestMatch(from: [.darkAqua, .aqua]) == .darkAqua).draw(in: r)
+        return true
+    }
+}
+
 // One 2 second round, as in the approved mockup: grows from a sliver to full over the first 80%, rests, starts over (ease in-out).
 func sweepAmount(_ t: Double) -> Double {
     let x = min(1, (t.truncatingRemainder(dividingBy: 2)) / 2 / 0.8)

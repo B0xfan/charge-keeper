@@ -102,7 +102,12 @@ final class Keeper: ObservableObject {
             }
         }
         let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode)
-        DispatchQueue.main.async { self.snap = s; self.refreshAnimation(); self.onIcon() }
+        DispatchQueue.main.async {
+            self.snap = s
+            let before = self.anim
+            self.refreshAnimation()
+            if self.anim == before { self.onIcon() }  // a changed anim has already redrawn the icon (its didSet)
+        }
     }
 
     // Main thread. The timer runs only while charging with a screen awake; any other state stops it and shows today's plain icon.
@@ -147,6 +152,9 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
         item.button?.action = #selector(toggle)
+        // Act on mouse-down, as macOS's own menu-bar items do. On mouse-up (the default) a click held over 0.3 s would pass the
+        // reopen guard below: the open panel closes itself at mouse-down, the action would come only at mouse-up.
+        item.button?.sendAction(on: [.leftMouseDown])
         item.button?.setAccessibilityLabel("Charge Keeper")
         let host = NSHostingController(rootView: PanelHost(keeper: keeper))
         host.sizingOptions = .preferredContentSize  // the panel is wider in the two-limits note
@@ -156,15 +164,14 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         updateIcon()
     }
 
-    // Charging: the coloured picture in the bar's real look (it can differ from the app's: light mode, dark wallpaper). Otherwise the template icon.
+    // Charging: the coloured picture, toned for the bar's real look at draw time (it can differ from the app's). Otherwise the template icon.
     private func updateIcon() {
         let s = keeper.snap
-        let dark = item.button?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        item.button?.image = isCharging(s) ? chargingIcon(level: s.level, fill: iconFill(keeper.anim), dark: dark) : makeBattery(level: s.level)
+        item.button?.image = isCharging(s) ? liveChargingIcon(level: s.level, fill: iconFill(keeper.anim)) : makeBattery(level: s.level)
     }
 
     private var closedAt = Date.distantPast
-    // A click on the icon while the panel is open first closes it (click-away), then arrives here: that click must not reopen it.
+    // A click on the icon while the panel is open first closes it (click-away, at mouse-down), then arrives here within the same event: that click must not reopen it.
     @objc private func toggle() { if popover.isShown { popover.performClose(nil) } else if Date().timeIntervalSince(closedAt) > 0.3 { show() } }
 
     private func show() {
@@ -174,7 +181,8 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         NSApp.activate(ignoringOtherApps: true)  // an accessory app is not active by default, so the slider and the click-away would not work
     }
 
-    func popoverDidClose(_ notification: Notification) { closedAt = Date(); keeper.panel(open: false) }
+    func popoverWillClose(_ notification: Notification) { closedAt = Date() }  // will, not did: did comes after the close animation
+    func popoverDidClose(_ notification: Notification) { keeper.panel(open: false) }
 }
 
 func runApp() -> Never {
