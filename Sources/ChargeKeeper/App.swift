@@ -145,16 +145,17 @@ final class Keeper: ObservableObject {
     // Work queue: read the battery, work out what is wanted (limit, sailing range, heat pause), bring the Mac in line, publish.
     private func step() {
         let b = battery()
+        let level = b.current ?? 0
+        if fullOnce && level >= 100 { fullOnce = false }  // the one-off ends by itself; before the plan, which depends on it
+        let rb = restBottom(limit: limit, sailing: sailOn, bottom: bottom)
         if let lv = b.current {  // an unreadable level changes neither state
             pausedAt = heatStep(on: heatOn, tempF: b.tempF, level: lv, pausedAt: pausedAt)
-            resting = nextResting(level: lv, top: limit, bottom: restBottom(limit: limit, sailing: sailOn, bottom: bottom), resting: resting)
+            resting = nextResting(level: lv, top: limit, bottom: rb, resting: resting)
         }
-        let level = b.current ?? 0
-        let p = plan(level: level, limit: limit, bottom: restBottom(limit: limit, sailing: sailOn, bottom: bottom), resting: resting, fullOnce: fullOnce, pausedAt: pausedAt)
+        let p = plan(level: level, limit: limit, bottom: rb, resting: resting, fullOnce: fullOnce, pausedAt: pausedAt)
         var mode = Mode.unsupported
         var mac: LimitState? = nil
         if let l = limiter {
-            if fullOnce && (b.current ?? 0) >= 100 { fullOnce = false }  // the one-off ends by itself
             if useMac {
                 // Normally a no-op (the choice is offered only while we hold nothing); covers a tick that took over just before the click.
                 mode = l.release() ? .macLimit : .failed("Could not put charging back to normal")
@@ -182,7 +183,8 @@ final class Keeper: ObservableObject {
         let want = active && b.current != nil && p.cut  // an unreadable level never switches the charger off
         let need = want || mode == .holding && (limit < macFloor || sailOn && bottom < macFloor)
         let note = steerCharger(need: need, want: want)
-        let paused = active && pausedAt != nil && level > heatFloor && (level >= macFloor || cutNow)  // under 80 only a real cut pauses
+        // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
+        let paused = active && pausedAt != nil && level > heatFloor && (cutNow || b.external == true && level >= macFloor)
         let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
                          heatOn: heatOn, sailing: sailOn, bottom: bottom, tempF: b.tempF, paused: paused, resting: resting)
         DispatchQueue.main.async {
