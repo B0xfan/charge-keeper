@@ -32,6 +32,10 @@ private struct Stage: View {
         ("onbattery", Snapshot(level: 54, plugged: false, charging: false, limit: 80, mode: .holding)),
         ("full-once", Snapshot(level: 80, plugged: true, charging: true, limit: 80, mode: .fullOnce)),
         ("mac-limit-on", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .foreign)),
+        ("stepped-aside", Snapshot(level: 80, plugged: true, charging: false, limit: 85, mode: .steppedAside, mac: LimitState(enabled: true, limit: 90))),
+        ("stepped-aside-off", Snapshot(level: 80, plugged: true, charging: true, limit: 85, mode: .steppedAside, mac: LimitState(enabled: false, limit: 85))),
+        ("mac-own-limit", Snapshot(level: 80, plugged: true, charging: false, limit: 85, mode: .macLimit, mac: LimitState(enabled: true, limit: 90))),
+        ("mac-own-limit-off", Snapshot(level: 62, plugged: true, charging: true, limit: 85, mode: .macLimit, mac: LimitState(enabled: false, limit: 100))),
     ]
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     var ok = true
