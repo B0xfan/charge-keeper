@@ -8,6 +8,11 @@ enum Applied: Equatable { case ok, foreign, changed, unsupported, failed(String)
 let markerURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("Charge Keeper/engaged")
 
+// System Settings or another app (AlDente) changed the limit while we held: it is no longer what we last set and read back.
+// A slider move is not that (cur is still our old level); just after a wake a change is ours to set back (sleep may reset it).
+// Called only after `cur == want` was ruled out.
+func changedOutside(cur: LimitState, held: LimitState?, reassert: Bool) -> Bool { !reassert && held != nil && cur != held }
+
 final class Limiter {
     private let m: MCL
     private let lock = NSLock()
@@ -48,8 +53,7 @@ final class Limiter {
             // waitpid, not kill(,0): a dead watchdog stays a zombie, which kill(,0) still calls alive. Failure retries next tick.
             if watchdog <= 0 || waitpid(watchdog, nil, WNOHANG) != 0, let o = orig { watchdog = 0; _ = startWatchdog(o) }
             if cur == want { held = want; return .ok }
-            // System Settings or another app (AlDente) changed it while we held: step aside, leave their setting as it is.
-            if !reassert, let h = held, cur != h { disownLocked(); return .changed }
+            if changedOutside(cur: cur, held: held, reassert: reassert) { disownLocked(); return .changed }
         }
         guard m.setLimit(target) else { return fail("macOS refused the limit \(target)%") }
         if m.enabled() != true { m.enable() }  // setting the level may already switch it on

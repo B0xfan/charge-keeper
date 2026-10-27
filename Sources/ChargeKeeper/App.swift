@@ -71,7 +71,8 @@ final class Keeper: ObservableObject {
     private var limit: Int  // work queue only
     private var fullOnce = false  // work queue only
     private var useMac = UserDefaults.standard.bool(forKey: "useMacLimit")  // work queue only: John chose the Mac's own limit
-    private var aside = false  // work queue only: someone else changed the limit while we held; wait for John's choice
+    // work queue only: someone else changed the limit while we held; wait for John's choice, also after a restart
+    private var aside = UserDefaults.standard.bool(forKey: "steppedAside") { didSet { UserDefaults.standard.set(aside, forKey: "steppedAside") } }
     private var adopt = false  // work queue only: one step may take over a limit that is already on
     private var reassertUntil = Date.distantPast  // work queue only: from sleep until shortly after wake
 
