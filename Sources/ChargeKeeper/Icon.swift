@@ -54,7 +54,7 @@ func sweepAmount(_ t: Double) -> Double {
 
 // The digits as one outline (medium, equal-width), centred on a point, for a flipped (y down) drawing.
 // The outline path, not styled text, because stroking styled text leaves stray lines where glyph parts overlap.
-private var digitsCache: (level: Int, path: CGPath)?  // the icon is redrawn 12 times a second, the level changes rarely
+private var digitsCache: (level: Int, path: CGPath)?  // the icon is redrawn a few times a second, the level changes rarely
 private func digitsPath(_ level: Int) -> CGPath {
     if let c = digitsCache, c.level == level { return c.path }
     let text = "\(level)", centreX: CGFloat = 13.5, centreY: CGFloat = 7.9

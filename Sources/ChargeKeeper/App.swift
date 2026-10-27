@@ -121,6 +121,7 @@ final class Keeper: ObservableObject {
                 let f = sweepAmount(Date.timeIntervalSinceReferenceDate)
                 if f != self.anim { self.anim = f }  // the rest at the end of each round publishes nothing
             }
+            t.tolerance = 0.1  // no need for exact ticks at a few per second; lets macOS batch wake-ups
             RunLoop.main.add(t, forMode: .common)  // .common: keeps moving while the slider is dragged
             animTimer = t
         } else {
@@ -181,9 +182,9 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         NSApp.activate(ignoringOtherApps: true)  // an accessory app is not active by default, so the slider and the click-away would not work
     }
 
-    // will, not did: did comes after the close animation. Only a mouse-down on our own button counts: Esc or a click elsewhere must not block a real click soon after.
+    // will, not did: did comes after the close animation. Only a fresh mouse-down on our own button counts (currentEvent can be a stale one after Cmd-Tab): Esc or a click elsewhere must not block a real click soon after.
     func popoverWillClose(_ notification: Notification) {
-        if let e = NSApp.currentEvent, e.type == .leftMouseDown, e.window === item.button?.window { closedAt = Date() }
+        if let e = NSApp.currentEvent, e.type == .leftMouseDown, e.window === item.button?.window, ProcessInfo.processInfo.systemUptime - e.timestamp < 0.3 { closedAt = Date() }
     }
     func popoverDidClose(_ notification: Notification) { keeper.panel(open: false) }
 }
