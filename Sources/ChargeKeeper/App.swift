@@ -116,7 +116,7 @@ final class Keeper: ObservableObject {
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if charging && !reduced && !screensAsleep {
             guard animTimer == nil else { return }
-            let t = Timer(timeInterval: 1.0 / 12, repeats: true) { [weak self] _ in
+            let t = Timer(timeInterval: 1 / sweepFPS, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 let f = sweepAmount(Date.timeIntervalSinceReferenceDate)
                 if f != self.anim { self.anim = f }  // the rest at the end of each round publishes nothing
@@ -181,7 +181,10 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         NSApp.activate(ignoringOtherApps: true)  // an accessory app is not active by default, so the slider and the click-away would not work
     }
 
-    func popoverWillClose(_ notification: Notification) { closedAt = Date() }  // will, not did: did comes after the close animation
+    // will, not did: did comes after the close animation. Only a mouse-down on our own button counts: Esc or a click elsewhere must not block a real click soon after.
+    func popoverWillClose(_ notification: Notification) {
+        if let e = NSApp.currentEvent, e.type == .leftMouseDown, e.window === item.button?.window { closedAt = Date() }
+    }
     func popoverDidClose(_ notification: Notification) { keeper.panel(open: false) }
 }
 

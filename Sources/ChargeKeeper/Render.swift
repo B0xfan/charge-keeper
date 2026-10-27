@@ -62,7 +62,40 @@ private struct Stage: View {
             ok = save(Stage(snap: charging, dark: dark, bar: b, fill: iconFill(stillSweep)), dark: dark, scale: 2, to: "\(dir)/panel-charging-\(name)-\(tone).png") && ok
         }
     }
+    ok = saveStrips(to: dir) && ok
     return ok
+}
+
+// Frame strips of the charging icon over one 2 s round at 12 (before), 4 and 3 (new) picture changes per second, light and dark, real size and enlarged.
+@MainActor private func saveStrips(to dir: String) -> Bool {
+    for dark in [false, true] { for (k, perRow) in [(2, 12), (6, 6)] {
+        let rates = [12, 4, 3], gap = 10 * k / 2, cell = 30 * k + gap, rowH = 15 * k + gap, head = 22
+        let rowsFor = { (r: Int) in (2 * r + perRow - 1) / perRow }
+        let w = perRow * cell + gap, h = rates.map { head + rowsFor($0) * rowH + gap }.reduce(0, +)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return false }
+        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = ctx
+        (dark ? NSColor(white: 0.15, alpha: 1) : NSColor(white: 0.93, alpha: 1)).setFill(); NSRect(x: 0, y: 0, width: w, height: h).fill()
+        var top = h
+        for r in rates {
+            let vals = (0..<2 * r).map { sweepAmount(Double($0) / Double(r)) }
+            let changes = zip(vals, vals.dropFirst() + [vals[0]]).filter { $0 != $1 }.count
+            let label = "\(r) per second\(r == 12 ? " (today)" : r == 3 ? " (new)" : ""): \(2 * r) frames per round, \(changes) picture changes"
+            print(label)
+            label.draw(at: NSPoint(x: gap, y: top - head + 2), withAttributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: dark ? NSColor.white : NSColor.black])
+            top -= head
+            for (i, v) in vals.enumerated() {
+                let x = gap + (i % perRow) * cell, y = top - (i / perRow + 1) * rowH + gap
+                chargingIcon(level: 62, fill: iconFill(v), dark: dark).draw(in: NSRect(x: x, y: y, width: 30 * k, height: 15 * k))
+            }
+            top -= rowsFor(r) * rowH + gap
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let path = "\(dir)/sweep-strips-\(k == 2 ? "real" : "enlarged")-\(dark ? "dark" : "light").png"
+        guard let data = rep.representation(using: .png, properties: [:]), (try? data.write(to: URL(fileURLWithPath: path))) != nil else { return false }
+        print(path)
+    } }
+    return true
 }
 
 @MainActor private func save<V: View>(_ view: V, dark: Bool, scale: Int, to path: String) -> Bool {

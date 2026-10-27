@@ -39,6 +39,8 @@ func selftest() -> Int32 {
     expect(!shouldRegisterLoginItem(path: "/Users/x/charge-keeper/build/Charge Keeper.app", asked: false), "login item: never for a build-folder copy")
     expect(isCharging(s0(charging: true, level: 62)) && !isCharging(s0(charging: true, level: 80)) && !isCharging(s0(charging: false, level: 62)) && !isCharging(s0(charging: true, level: 62, plugged: false)), "animation only while really charging")
     expect(sweepAmount(0) == 0 && sweepAmount(1.6) == 1 && sweepAmount(1.9) == 1 && sweepAmount(0.8) > sweepAmount(0.4) && abs(sweepAmount(0.8) - 0.5) < 1e-9, "sweep grows, rests, restarts")
+    let frames = Set((0..<Int(2 * sweepFPS)).map { sweepAmount(Double($0) / sweepFPS) })  // one 2 s round at the timer's rate
+    expect(frames.count >= 5 && frames.contains(0), "sweep at its slower rate still shows a sliver, several steps and full")
     expect(MainActor.assumeIsolated { inkRed(.darkAqua) > 0.8 && inkRed(.aqua) < 0.2 }, "menu-bar charging picture follows the drawing appearance (one image, drawn twice)")
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
     return bad == 0 ? 0 : 1

@@ -44,6 +44,8 @@ func liveChargingIcon(level: Int, fill: Double) -> NSImage {
     }
 }
 
+let sweepFPS = 3.0  // picture changes per second at most: each change costs the CPU about 1 to 2% (macOS re-copies the menu-bar item)
+
 // One 2 second round, as in the approved mockup: grows from a sliver to full over the first 80%, rests, starts over (ease in-out).
 func sweepAmount(_ t: Double) -> Double {
     let x = min(1, (t.truncatingRemainder(dividingBy: 2)) / 2 / 0.8)
