@@ -18,6 +18,8 @@ struct Snapshot: Equatable {
 
 // The panels that show the Mac's own limit instead of Charge Keeper's slider.
 func showsChoice(_ m: Mode) -> Bool { m == .foreign || m == .steppedAside }
+// Charge Keeper has let the Mac's limit be (Quit changes nothing then).
+func notHolding(_ m: Mode) -> Bool { showsChoice(m) || m == .macLimit }
 
 let limitRange = 50...100  // the approved mockup's slider; macOS accepted 89 in Phase 1, whether it holds under 80 is for the app tests to show
 
@@ -70,11 +72,16 @@ final class Keeper: ObservableObject {
     private let work = DispatchQueue(label: "keeper.work")  // every Mac-limit call happens here, never on the screen thread
     private var limit: Int  // work queue only
     private var fullOnce = false  // work queue only
-    private var useMac = UserDefaults.standard.bool(forKey: "useMacLimit")  // work queue only: John chose the Mac's own limit
+    // work queue only: John chose the Mac's own limit
+    private var useMac = UserDefaults.standard.bool(forKey: "useMacLimit") { didSet { UserDefaults.standard.set(useMac, forKey: "useMacLimit") } }
     // work queue only: someone else changed the limit while we held; wait for John's choice, also after a restart
     private var aside = UserDefaults.standard.bool(forKey: "steppedAside") { didSet { UserDefaults.standard.set(aside, forKey: "steppedAside") } }
     private var adopt = false  // work queue only: one step may take over a limit that is already on
-    private var reassertUntil = Date.distantPast  // work queue only: from sleep until shortly after wake
+    // work queue only. From sleep until the first good reading after wake, a changed limit is set back (sleep may reset it), not
+    // counted as someone else's. shortcut: a change made in the last 30 s before sleep is set back too; it cannot be told apart.
+    // A sleep without a wake would leave it on until the next wake; fine, as that is the old behaviour (set back), never a lost limit.
+    private var reassert = false
+    private var woke = false
 
     init() {
         let saved = UserDefaults.standard.integer(forKey: "limit")
@@ -89,11 +96,11 @@ final class Keeper: ObservableObject {
         registerLoginItemOnce()
         work.async { self.step() }  // the first step also cleans up a limit left by a crash or power cut (see Limiter.apply)
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in self.work.async { self.step() } }
-        nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in self.work.async { self.reassertUntil = .distantFuture } }
+        nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in self.work.async { self.reassert = true; self.woke = false } }
         nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
-            // Sleep may have undone the limit; step() reads it and sets it back (not counted as someone else's change until
-            // a little after wake). The Mac's charge service can be slow to answer right after wake, so ask again a little later.
-            self.work.async { self.reassertUntil = Date() + (wakeChecks.last ?? 0) + 5 }
+            // Sleep may have undone the limit; step() reads it and sets it back. The Mac's charge service can be slow to answer
+            // right after wake, so ask again a little later; `reassert` lasts until a step actually reads it.
+            self.work.async { self.woke = true }
             for delay in wakeChecks { self.work.asyncAfter(deadline: .now() + delay) { self.step() } }
         }
     }
@@ -113,16 +120,20 @@ final class Keeper: ObservableObject {
             } else if fullOnce {
                 mode = l.release() ? .fullOnce : .failed("Could not put charging back to normal")
             } else {
-                switch l.apply(limit, adopt: adopt, reassert: Date() < reassertUntil) {
+                let r = l.apply(limit, adopt: adopt, reassert: reassert)
+                switch r {
                 case .ok: mode = .holding
                 case .foreign: mode = .foreign
                 case .changed: aside = true; mode = .steppedAside
                 case .unsupported: mode = .unsupported
                 case .failed(let why): mode = .failed(why)
                 }
-                adopt = false
+                if case .failed = r {} else {
+                    adopt = false  // kept on a failure, so John's "Use Charge Keeper" is tried again next tick
+                    if woke { reassert = false; woke = false }
+                }
             }
-            if showsChoice(mode) || mode == .macLimit { mac = l.current() }
+            if notHolding(mode) { mac = l.current() }
         }
         let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac)
         DispatchQueue.main.async {
@@ -161,7 +172,7 @@ final class Keeper: ObservableObject {
     // Panel 4's choice. Charge Keeper: take over the limit that is on now. The Mac's own: Charge Keeper only shows the level, also after a restart.
     func choose(macLimit: Bool) {
         work.async {
-            self.useMac = macLimit; UserDefaults.standard.set(macLimit, forKey: "useMacLimit")
+            self.useMac = macLimit
             self.aside = false; self.adopt = !macLimit; self.step()
         }
     }
@@ -289,9 +300,9 @@ struct Panel: View {
                 Button { act.full() } label: { Text("Charge to full once").frame(maxWidth: .infinity) }
             }
             Divider()
-            Button(s.mode == .holding || s.mode == .fullOnce ? "Quit (charging turns back on)" : "Quit") { act.quit() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+            Button(notHolding(s.mode) ? "Quit" : "Quit (charging turns back on)") { act.quit() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
         }
-        .padding(14).frame(width: showsChoice(s.mode) || s.mode == .macLimit ? 300 : 272)
+        .padding(14).frame(width: notHolding(s.mode) ? 300 : 272)
         .onAppear { draft = Double(s.limit) }
         .onChange(of: s.limit) { _, new in draft = Double(new) }
     }
