@@ -40,6 +40,15 @@ private struct Stage: View {
         ("below80-holding", Snapshot(level: 58, plugged: false, charging: false, limit: 60, mode: .holding, cut: true)),
         ("below80-no-helper", Snapshot(level: 70, plugged: true, charging: true, limit: 60, mode: .holding, cutNote: .noHelper)),
         ("below80-lid-closed", Snapshot(level: 70, plugged: true, charging: true, limit: 60, mode: .holding, cutNote: .lidClosed)),
+        // Mockup v2, panels 1 to 6 (the same numbers as the mockup).
+        ("v2-1-switches-off", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding, tempF: 90)),
+        ("v2-2-heat-on-cool", Snapshot(level: 64, plugged: true, charging: true, limit: 80, mode: .holding, heatOn: true, tempF: 90)),
+        ("v2-3-heat-paused", Snapshot(level: 66, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, heatOn: true, tempF: 99, paused: true)),
+        ("v2-3b-heat-paused-on-charger", Snapshot(level: 86, plugged: true, charging: false, limit: 90, mode: .holding, heatOn: true, tempF: 99, paused: true)),
+        ("v2-4-sailing-top", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding, sailing: true, bottom: 75, resting: true)),
+        ("v2-5-sailing-drifting", Snapshot(level: 77, plugged: true, charging: false, limit: 80, mode: .holding, sailing: true, bottom: 75, resting: true)),
+        ("v2-6-sailing-bottom", Snapshot(level: 74, plugged: true, charging: true, limit: 80, mode: .holding, sailing: true, bottom: 75)),
+        ("v2-full-once-heat", Snapshot(level: 90, plugged: true, charging: false, limit: 80, mode: .fullOnce, heatOn: true, sailing: true, bottom: 75, tempF: 99, paused: true)),
         ("below80-aldente", Snapshot(level: 80, plugged: true, charging: false, limit: 60, mode: .holding, cutNote: .aldente)),
     ]
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

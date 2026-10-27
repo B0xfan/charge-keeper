@@ -128,11 +128,59 @@ func selftest() -> Int32 {
         expect(frames.count >= 5, "sweep at its slower rate shows at least 5 pictures per round (start offset \(off))")
     }
     expect(MainActor.assumeIsolated { inkRed(.darkAqua) > 0.8 && inkRed(.aqua) < 0.2 }, "menu-bar charging picture follows the drawing appearance (one image, drawn twice)")
-    // Under 80: off at the limit, on again 5 lower, unchanged in between; 80 and up and a closed lid never switch.
-    expect(cutWanted(level: 60, limit: 60, cutNow: false, lidClosed: false) && cutWanted(level: 85, limit: 60, cutNow: false, lidClosed: false), "cut point: at or above the limit")
-    expect(cutWanted(level: 56, limit: 60, cutNow: true, lidClosed: false) && !cutWanted(level: 59, limit: 60, cutNow: false, lidClosed: false), "between the points: unchanged")
-    expect(!cutWanted(level: 55, limit: 60, cutNow: true, lidClosed: false) && !cutWanted(level: 45, limit: 50, cutNow: true, lidClosed: false), "restore point: 5 under the limit")
-    expect(!cutWanted(level: 95, limit: 80, cutNow: true, lidClosed: false) && !cutWanted(level: 70, limit: 60, cutNow: true, lidClosed: true), "never at 80 and up, never with the lid closed")
+    // Under 80 without sailing: off at the limit, on again 5 lower, unchanged in between (the plan, step by step).
+    func run(_ levels: [Int], limit: Int, sailing: Bool = false, bottom: Int = 0, fullOnce: Bool = false, temps: [Double?]? = nil, heat: Bool = false) -> [Plan] {
+        var resting = false, paused: Int? = nil
+        return levels.enumerated().map { i, lv in
+            paused = heatStep(on: heat, tempF: temps?[i] ?? nil, level: lv, pausedAt: paused)
+            let b = restBottom(limit: limit, sailing: sailing, bottom: bottom)
+            resting = nextResting(level: lv, top: limit, bottom: b, resting: resting)
+            return plan(level: lv, limit: limit, bottom: b, resting: resting, fullOnce: fullOnce, pausedAt: paused)
+        }
+    }
+    let on = Plan(mac: 80, cut: false), off = Plan(mac: 80, cut: true)
+    expect(run([58, 60, 59, 56, 55, 57, 60], limit: 60) == [on, off, off, off, on, on, off], "under 80: off at the limit, on again 5 lower, unchanged in between")
+    expect(run([88, 70, 61, 60], limit: 60) == [off, off, off, off], "under 80 set while above 80: off straight away, all the way down")
+    expect(run([85, 90, 95], limit: 80) == Array(repeating: on, count: 3) && run([70], limit: 90) == [Plan(mac: 90, cut: false)], "80 and up: the Mac's own limit, never the charger")
+    expect(run([60, 56, 55, 52, 50, 51], limit: 60, sailing: true, bottom: 50) == [off, off, off, off, on, on], "sailing replaces the 5-point gap under 80")
+    // Sailing range, 80 and up: the Mac's limit moves to the bottom at the top, back to the top at the bottom.
+    let top = Plan(mac: 90, cut: false), rest = Plan(mac: 85, cut: false)
+    expect(run([86, 90, 88, 86, 85, 87, 90], limit: 90, sailing: true, bottom: 85) == [top, rest, rest, rest, top, top, rest], "sailing: rests down, then charges again")
+    expect(run([90, 84, 75, 70, 72], limit: 90, sailing: true, bottom: 70) == [off, off, off, Plan(mac: 90, cut: false), Plan(mac: 90, cut: false)],
+           "sailing to a bottom under 80: the charger switch from the top down, then up to the top")
+    expect(run([75, 80, 77, 75, 74], limit: 80, sailing: true, bottom: 75) == [on, off, off, on, on], "mockup range 80/75: runs on battery from 80 down to 75")
+    expect(run([95, 100], limit: 80, sailing: true, bottom: 75, fullOnce: true) == [Plan(mac: nil, cut: false), Plan(mac: nil, cut: false)], "charge to full once ignores the range")
+    expect(nextResting(level: 100, top: 80, bottom: 75, resting: false), "after charging to full once, the range starts with a rest")
+    // Heat pause: above 95°F, again at 91°F or cooler; the level it stopped at only moves down.
+    expect(heatStep(on: true, tempF: 95, level: 70, pausedAt: nil) == nil && heatStep(on: true, tempF: 95.5, level: 70, pausedAt: nil) == 70, "heat: pauses above 95°F")
+    expect(heatStep(on: true, tempF: 93, level: 70, pausedAt: 70) == 70 && heatStep(on: true, tempF: 93, level: 70, pausedAt: nil) == nil, "heat: the 91-95 gap keeps whatever it was")
+    expect(heatStep(on: true, tempF: 91, level: 70, pausedAt: 70) == nil, "heat: starts again at 91°F")
+    expect(heatStep(on: true, tempF: 99, level: 68, pausedAt: 70) == 68 && heatStep(on: true, tempF: 99, level: 72, pausedAt: 70) == 70, "heat: the pause level only moves down")
+    expect(heatStep(on: false, tempF: 99, level: 70, pausedAt: 70) == nil && heatStep(on: true, tempF: nil, level: 70, pausedAt: 70) == nil, "heat: switch off or no reading ends the pause")
+    let warm: [Double?] = [90, 99, 99, 93, 93, 90]
+    expect(run([84, 86, 86, 86, 86, 86], limit: 95, temps: warm, heat: true) == [Plan(mac: 95, cut: false), Plan(mac: 86, cut: false), Plan(mac: 86, cut: false), Plan(mac: 86, cut: false), Plan(mac: 86, cut: false), Plan(mac: 95, cut: false)],
+           "heat at 80 and up: the Mac's limit at the level it paused at, on the charger, back to the limit once cool")
+    expect(run([66, 65, 64], limit: 80, temps: [99, 99, 90], heat: true) == [off, off, on], "heat under 80: the charger switch, back on once cool")
+    expect(run([56, 52, 50, 52, 55, 56], limit: 80, temps: Array(repeating: 99, count: 6), heat: true) == [off, off, on, on, on, off],
+           "heat near 50%: the pause ends at 50 and starts again only above 55 (no switching at every percent)")
+    expect(run([90, 92], limit: 80, fullOnce: true, temps: [99, 99], heat: true) == [Plan(mac: 90, cut: false), Plan(mac: 90, cut: false)] && run([70], limit: 80, fullOnce: true, temps: [99], heat: true) == [off],
+           "heat during charge to full once")
+    expect(run([86, 88], limit: 90, sailing: true, bottom: 85, temps: [99, 99], heat: true) == [Plan(mac: 86, cut: false), Plan(mac: 86, cut: false)], "heat wins over sailing's charging up")
+    expect(run([90, 95], limit: 95, sailing: true, bottom: 85, temps: [90, 99], heat: true) == [Plan(mac: 95, cut: false), Plan(mac: 85, cut: false)], "heat with sailing resting: never above the rest")
+    expect(run([60, 56, 55], limit: 60, temps: [99, 99, 99], heat: true) == [off, off, off], "heat under 80 keeps the charger off past the 5-point gap")
+    expect(clampBottom(75, limit: 80) == 75 && clampBottom(80, limit: 80) == 75 && clampBottom(75, limit: 70) == 65 && clampBottom(10, limit: 80) == 50, "range bottom: at least 5 under the top, pushed down with it")
+    expect(bottomRange(50) == 40...45 && bottomRange(55) == 45...50 && bottomRange(80) == 50...75, "range bottom slider always spans a step")
+    expect(abs((fahrenheit(centiC: 3019) ?? 0) - 86.342) < 0.01 && fahrenheit(centiC: 3500) == 95 && fahrenheit(centiC: nil) == nil && fahrenheit(centiC: 0) == nil, "battery temperature in °F")
+    var h = Snapshot(level: 66, plugged: true, charging: false, limit: 80, mode: .holding, heatOn: true, tempF: 99, paused: true)
+    expect(statusText(h) == "Paused, battery warm" && !isCharging(h), "heat pause status")
+    h.mode = .fullOnce
+    expect(statusText(h) == "Paused, battery warm", "heat pause status during charge to full once")
+    h = Snapshot(level: 77, plugged: true, charging: false, limit: 80, mode: .holding, sailing: true, bottom: 75, resting: true)
+    expect(statusText(h) == "Resting down to 75%", "sailing: resting")
+    h.level = 80
+    expect(statusText(h) == "Holding at 80%", "sailing: at the top")
+    h.level = 74; h.resting = false; h.charging = true
+    expect(statusText(h) == "Charging to 80%" && isCharging(h), "sailing: back at the bottom, charging")
     var t = Snapshot(level: 70, plugged: false, charging: false, limit: 60, mode: .holding, cut: true)
     expect(statusText(t) == "Coming down to 60%" && !isCharging(t), "cut above the limit")
     t.level = 58
@@ -154,6 +202,8 @@ case "--probe":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(1) }
     let st = m.state()
     print("mcl: supported=\(m.supported) enabled=\(st.map { "\($0.enabled)" } ?? "?") limit=\(st.map { "\($0.limit)" } ?? "?")")
+    let bt = battery()
+    print("battery: level=\(bt.current.map(String.init) ?? "?") temperature=\(bt.tempF.map(degrees) ?? "?")")
 case "--restore":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(2) }
     let ok = restore(m, LimitState(enabled: false, limit: 100))

@@ -21,12 +21,38 @@ let cmdCut = UInt8(ascii: "c"), cmdOn = UInt8(ascii: "o")
 // Replies: we switched it off / power is on / off by another app, left alone / the switch failed.
 let replyCut = UInt8(ascii: "C"), replyOn = UInt8(ascii: "O"), replyBusy = UInt8(ascii: "B"), replyErr = UInt8(ascii: "E")
 
-// Should the charger be off now? Off at the limit, back on at limit - band, unchanged in between.
-func cutWanted(level: Int, limit: Int, cutNow: Bool, lidClosed: Bool) -> Bool {
-    guard limit < macFloor, !lidClosed else { return false }  // lid closed: cutting power can put a Mac with an outside screen to sleep
-    if level >= limit { return true }
-    if level <= limit - cutBand { return false }
-    return cutNow
+// Heat pause, fixed points in °F (John, 2026-10-27): pause above 95, start again at 91 or cooler.
+let heatPauseF = 95.0, heatResumeF = 91.0
+let heatFloor = 50  // at or under this level heat pause ends: under 80 a pause runs the Mac on its battery
+
+// nil: not paused. Paused: the level it stopped at, only ever moving down, so a small dip is not charged back up while warm.
+// An unreadable temperature ends the pause (never a pause nobody can see the reason for). At the floor the pause ends, and a
+// new one starts only 5 above it, so a warm battery near 50% is not switched on and off at every percent.
+func heatStep(on: Bool, tempF: Double?, level: Int, pausedAt: Int?) -> Int? {
+    guard on, let t = tempF, level > heatFloor, pausedAt == nil ? t > heatPauseF && level > heatFloor + cutBand : t > heatResumeF else { return nil }
+    return min(pausedAt ?? level, level)
+}
+
+// Where charging starts again after the top was reached: the sailing range's bottom, else 5 under a limit below 80
+// (the charger switch's gap), else nowhere (80 and up, macOS's own limit does its own gap).
+func restBottom(limit: Int, sailing: Bool, bottom: Int) -> Int? { sailing ? bottom : limit < macFloor ? limit - cutBand : nil }
+// Resting: the top was reached and the level has not yet come down to the bottom. shortcut: kept in memory only, so after a
+// restart it charges up to the top once before resting again.
+func nextResting(level: Int, top: Int, bottom: Int?, resting: Bool) -> Bool {
+    guard let b = bottom else { return false }
+    return level >= top ? true : level <= b ? false : resting
+}
+
+// mac: the Mac's own limit (80...100), nil = off (charge to full once). cut: the charger's power switched off.
+struct Plan: Equatable { var mac: Int?; var cut: Bool }
+func plan(level: Int, limit: Int, bottom: Int?, resting: Bool, fullOnce: Bool, pausedAt: Int?) -> Plan {
+    var r = Plan(mac: fullOnce ? nil : max(limit, macFloor), cut: false)
+    // Resting: the Mac's limit at the bottom (on the charger the level then stays put); a bottom under 80 needs the charger
+    // switch from the top down, as the Mac's own 80 would never let it lower.
+    if !fullOnce, resting, let b = bottom { r = Plan(mac: max(b, macFloor), cut: b < macFloor) }
+    // Heat wins over everything, "Charge to full once" too: stop at the level it paused at.
+    if let p = pausedAt { r = Plan(mac: max(min(r.mac ?? 100, p), macFloor), cut: r.cut || level < macFloor) }
+    return r
 }
 
 func lidClosed() -> Bool {
