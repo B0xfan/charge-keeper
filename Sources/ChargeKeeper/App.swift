@@ -16,6 +16,11 @@ struct Snapshot: Equatable {
     var mac: LimitState? = nil  // the Mac's own setting, read only while Charge Keeper is not holding
     var cut = false  // under 80: the charger's power is switched off, the Mac runs on its battery
     var cutNote: CutNote? = nil  // under 80, but the charger cannot be switched: the Mac's own 80 holds instead
+    var heatOn = false, sailing = false
+    var bottom = 75  // the sailing range's bottom ("Charge again below")
+    var tempF: Double? = nil
+    var paused = false  // heat pause in effect: charging stopped because the battery is warm
+    var resting = false  // the top was reached, waiting for the level to come down to the bottom
 }
 
 enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed }
@@ -31,6 +36,10 @@ func notHolding(_ m: Mode) -> Bool { showsChoice(m) || m == .macLimit }
 let limitRange = 50...100  // the approved mockup's slider; 80 and up is the Mac's own limit, under 80 the charger switch (Charger.swift)
 
 func clampLimit(_ v: Int) -> Int { min(limitRange.upperBound, max(limitRange.lowerBound, v / 5 * 5)) }
+// The sailing range's bottom: at least 5 under the top; the slider always spans at least one step (40...45 under a top of 50).
+func bottomRange(_ limit: Int) -> ClosedRange<Int> { min(limitRange.lowerBound, limit - 2 * cutBand)...(limit - cutBand) }
+func clampBottom(_ v: Int, limit: Int) -> Int { let r = bottomRange(limit); return min(r.upperBound, max(r.lowerBound, v / 5 * 5)) }
+func degrees(_ f: Double) -> String { "\(Int(f.rounded()))°F" }
 
 func statusText(_ s: Snapshot) -> String {
     switch s.mode {
@@ -41,6 +50,8 @@ func statusText(_ s: Snapshot) -> String {
     case .macLimit: return s.mac.map { $0.enabled ? "Mac's limit: \($0.limit)%" : "No limit on" } ?? "Mac's limit"
     case .failed: return "Could not set the limit"
     case .holding, .fullOnce:
+        if s.paused { return "Paused, battery warm" }
+        if s.mode == .holding && s.sailing && s.resting && s.level != s.limit { return "Resting down to \(s.bottom)%" }
         if s.cut { return s.level > s.limit ? "Coming down to \(s.limit)%" : "Holding at \(s.limit)%" }
         if !s.plugged { return "On battery" }
         if s.mode == .fullOnce { return "Charging to full, once" }
@@ -91,6 +102,12 @@ final class Keeper: ObservableObject {
     // A sleep without a wake would leave it on until the next wake; fine, as that is the old behaviour (set back), never a lost limit.
     private var reassert = false
     private var woke = false
+    // work queue only: the two switches of mockup v2, both off by default, and the sailing range's bottom
+    private var heatOn = UserDefaults.standard.bool(forKey: "heatPause") { didSet { UserDefaults.standard.set(heatOn, forKey: "heatPause") } }
+    private var sailOn = UserDefaults.standard.bool(forKey: "sailing") { didSet { UserDefaults.standard.set(sailOn, forKey: "sailing") } }
+    private var bottom: Int { didSet { UserDefaults.standard.set(bottom, forKey: "sailBottom") } }
+    private var pausedAt: Int?  // work queue only: see heatStep
+    private var resting = false  // work queue only: see nextResting
     private let charger = ChargerClient(path: helperSocket)
     private var cutNow = false { didSet { napGuard() } }  // work queue only: the helper's last answer
     private var activity: NSObjectProtocol?  // while cut: keeps App Nap from stretching the 30 s check-in past the helper's 150 s
@@ -102,6 +119,8 @@ final class Keeper: ObservableObject {
     init() {
         let saved = UserDefaults.standard.integer(forKey: "limit")
         limit = saved == 0 ? 80 : clampLimit(saved)
+        let b = UserDefaults.standard.integer(forKey: "sailBottom")
+        bottom = clampBottom(b == 0 ? limit - cutBand : b, limit: limit)
         limiter = MCL().map(Limiter.init)
         let nc = NSWorkspace.shared.notificationCenter
         for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false)] {
@@ -123,9 +142,15 @@ final class Keeper: ObservableObject {
         }
     }
 
-    // Work queue: read the battery, bring the Mac's limit in line with what is wanted, publish.
+    // Work queue: read the battery, work out what is wanted (limit, sailing range, heat pause), bring the Mac in line, publish.
     private func step() {
         let b = battery()
+        if let lv = b.current {  // an unreadable level changes neither state
+            pausedAt = heatStep(on: heatOn, tempF: b.tempF, level: lv, pausedAt: pausedAt)
+            resting = nextResting(level: lv, top: limit, bottom: restBottom(limit: limit, sailing: sailOn, bottom: bottom), resting: resting)
+        }
+        let level = b.current ?? 0
+        let p = plan(level: level, limit: limit, bottom: restBottom(limit: limit, sailing: sailOn, bottom: bottom), resting: resting, fullOnce: fullOnce, pausedAt: pausedAt)
         var mode = Mode.unsupported
         var mac: LimitState? = nil
         if let l = limiter {
@@ -135,12 +160,12 @@ final class Keeper: ObservableObject {
                 mode = l.release() ? .macLimit : .failed("Could not put charging back to normal")
             } else if aside {
                 mode = .steppedAside
-            } else if fullOnce {
+            } else if fullOnce && p.mac == nil {
                 mode = l.release() ? .fullOnce : .failed("Could not put charging back to normal")
             } else {
-                let r = l.apply(max(limit, macFloor), adopt: adopt, reassert: reassert)  // under 80 the Mac's 80 is the backstop
+                let r = l.apply(p.mac ?? 100, adopt: adopt, reassert: reassert)  // under 80 the Mac's 80 is the backstop
                 switch r {
-                case .ok: mode = .holding
+                case .ok: mode = fullOnce ? .fullOnce : .holding
                 case .foreign: mode = .foreign
                 case .changed: aside = true; mode = .steppedAside
                 case .unsupported: mode = .unsupported
@@ -153,8 +178,13 @@ final class Keeper: ObservableObject {
             }
             if notHolding(mode) { mac = l.current() }
         }
-        let note = steerCharger(below: mode == .holding && limit < macFloor, level: b.current)
-        let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note)
+        let active = mode == .holding || mode == .fullOnce
+        let want = active && b.current != nil && p.cut  // an unreadable level never switches the charger off
+        let need = want || mode == .holding && (limit < macFloor || sailOn && bottom < macFloor)
+        let note = steerCharger(need: need, want: want)
+        let paused = active && pausedAt != nil && level > heatFloor && (level >= macFloor || cutNow)  // under 80 only a real cut pauses
+        let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
+                         heatOn: heatOn, sailing: sailOn, bottom: bottom, tempF: b.tempF, paused: paused, resting: resting)
         DispatchQueue.main.async {
             self.snap = s
             let before = self.anim
@@ -163,18 +193,19 @@ final class Keeper: ObservableObject {
         }
     }
 
-    // Work queue. Under 80: asks the helper each step (which also tells it the app is alive) to switch the charger off at the
-    // limit or on again. Otherwise only a cut of ours is given back. AlDente running: Charge Keeper does not switch the charger.
-    private func steerCharger(below: Bool, level: Int?) -> CutNote? {
-        let aldente = below && aldenteRunning()
-        guard below || cutNow else { return nil }
-        let lid = below && lidClosed()
-        let want = below && !aldente && level.map { cutWanted(level: $0, limit: limit, cutNow: cutNow, lidClosed: lid) } == true
-        let r = charger.send(want)
+    // Work queue. need: the settings may switch the charger now (under 80, the range's bottom under 80, or a heat pause
+    // under 80); each step then asks the helper (which also tells it the app is alive) for power off (want) or on.
+    // Otherwise only a cut of ours is given back. AlDente running or the lid closed: Charge Keeper does not switch the charger.
+    private func steerCharger(need: Bool, want: Bool) -> CutNote? {
+        let aldente = need && aldenteRunning()
+        guard need || cutNow else { return nil }
+        let lid = need && lidClosed()  // cutting power can put a Mac with an outside screen to sleep
+        let w = want && !aldente && !lid
+        let r = charger.send(w)
         cutNow = r == replyCut
-        if !below || !want && r == replyOn { charger.disconnect() }  // nothing of ours is off: no need to keep the line open
+        if !need || !w && r == replyOn { charger.disconnect() }  // nothing of ours is off: no need to keep the line open
         if aldente { return .aldente }
-        guard below else { return nil }
+        guard need else { return nil }
         if r == replyBusy { return .otherApp }
         if r != replyCut && r != replyOn { return .noHelper }
         return lid ? .lidClosed : nil
@@ -202,7 +233,16 @@ final class Keeper: ObservableObject {
     }
 
     func panel(open: Bool) { panelOpen = open; if open { bar = anim } }
-    func setLimit(_ v: Int) { work.async { self.limit = clampLimit(v); UserDefaults.standard.set(self.limit, forKey: "limit"); self.step() } }
+    func setLimit(_ v: Int) {
+        work.async {
+            self.limit = clampLimit(v); UserDefaults.standard.set(self.limit, forKey: "limit")
+            self.bottom = clampBottom(self.bottom, limit: self.limit)  // moving the top down pushes the bottom down too
+            self.step()
+        }
+    }
+    func setBottom(_ v: Int) { work.async { self.bottom = clampBottom(v, limit: self.limit); self.step() } }
+    func setHeat(_ on: Bool) { work.async { self.heatOn = on; self.step() } }  // off ends a pause straight away
+    func setSailing(_ on: Bool) { work.async { self.sailOn = on; self.step() } }
     func chargeToFullOnce() { work.async { self.fullOnce = true; self.step() } }
     func backToLimit() { work.async { self.fullOnce = false; self.step() } }
     // Panel 4's choice. Charge Keeper: take over the limit that is on now. The Mac's own: Charge Keeper only shows the level, also after a restart.
@@ -279,12 +319,16 @@ func runApp() -> Never {
 struct PanelHost: View {
     @ObservedObject var keeper: Keeper
     var body: some View {
-        Panel(s: keeper.snap, bar: keeper.bar, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, choose: keeper.choose, quit: keeper.quit))
+        Panel(s: keeper.snap, bar: keeper.bar, act: PanelActions(setLimit: keeper.setLimit, setBottom: keeper.setBottom, heat: keeper.setHeat, sailing: keeper.setSailing,
+                                                          full: keeper.chargeToFullOnce, back: keeper.backToLimit, choose: keeper.choose, quit: keeper.quit))
     }
 }
 
 struct PanelActions {
     var setLimit: (Int) -> Void = { _ in }
+    var setBottom: (Int) -> Void = { _ in }
+    var heat: (Bool) -> Void = { _ in }
+    var sailing: (Bool) -> Void = { _ in }
     var full: () -> Void = {}
     var back: () -> Void = {}
     var choose: (Bool) -> Void = { _ in }  // true: the Mac's own limit
@@ -296,7 +340,11 @@ struct Panel: View {
     var bar = 0.0  // how much of the lighter "still to charge" stretch is drawn, 0...1
     let act: PanelActions
     @State private var draft: Double
-    init(s: Snapshot, bar: Double = 0, act: PanelActions = PanelActions()) { self.s = s; self.bar = bar; self.act = act; _draft = State(initialValue: Double(s.limit)) }
+    @State private var draftBottom: Double
+    init(s: Snapshot, bar: Double = 0, act: PanelActions = PanelActions()) {
+        self.s = s; self.bar = bar; self.act = act
+        _draft = State(initialValue: Double(s.limit)); _draftBottom = State(initialValue: Double(s.bottom))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -305,7 +353,13 @@ struct Panel: View {
                 Spacer()
                 Text(statusText(s)).foregroundStyle(.secondary)
             }
-            if !showsChoice(s.mode) { LevelBar(level: s.level, marker: s.mode == .holding ? s.limit : s.mode == .macLimit && s.mac?.enabled == true ? s.mac?.limit : nil, stretch: isCharging(s) ? bar : 0) }
+            if !showsChoice(s.mode) { LevelBar(level: s.level, marker: s.mode == .holding ? s.limit : s.mode == .macLimit && s.mac?.enabled == true ? s.mac?.limit : nil,
+                                               low: s.mode == .holding && s.sailing ? s.bottom : nil, stretch: isCharging(s) ? bar : 0) }
+            if s.paused, let f = s.tempF {
+                Note(Text("Charging is paused because the battery is \(degrees(f)).").bold().foregroundColor(.orange)
+                    + Text(" It starts again by itself once the battery cools to \(degrees(heatResumeF)). ")
+                    + Text(s.cut ? "Your Mac runs on its battery meanwhile." : "Your Mac keeps running on the charger meanwhile."))
+            }
             switch s.mode {
             case .foreign, .steppedAside:
                 Note((s.mode == .foreign ? Text("Your Mac has its own charge limit turned on.")
@@ -325,6 +379,8 @@ struct Panel: View {
                 Note(Text("Your limit is paused. When the battery reaches 100%, Charge Keeper goes back to holding at ")
                     + Text("\(s.limit)%").bold().foregroundColor(.orange) + Text(" by itself."))
                 Button { act.back() } label: { Text("Stop and go back to \(s.limit)%").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
+                if let n = s.cutNote { Note(cutNoteText(n)) }
+                switches
             case .holding, .starting:
                 VStack(alignment: .leading, spacing: 6) {
                     HStack { Text("Stop charging at").bold(); Spacer(); Text("\(Int(draft))%").bold() }
@@ -333,15 +389,51 @@ struct Panel: View {
                     }
                     HStack { Text("\(limitRange.lowerBound)%"); Spacer(); Text("\(limitRange.upperBound)%") }.font(.caption).foregroundStyle(.secondary)
                 }
+                if s.sailing {
+                    let r = bottomRange(s.limit)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack { Text("Charge again below").bold(); Spacer(); Text("\(Int(draftBottom))%").bold() }
+                        Slider(value: $draftBottom, in: Double(r.lowerBound)...Double(r.upperBound), step: 5) { editing in
+                            if !editing { act.setBottom(Int(draftBottom)) }
+                        }
+                        HStack { Text("\(r.lowerBound)%"); Spacer(); Text("\(r.upperBound)%") }.font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if let n = s.cutNote { Note(cutNoteText(n)) }
                 Button { act.full() } label: { Text("Charge to full once").frame(maxWidth: .infinity) }
+                switches
             }
             Divider()
             Button(notHolding(s.mode) ? "Quit" : "Quit (charging turns back on)") { act.quit() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
         }
         .padding(14).frame(width: notHolding(s.mode) ? 300 : 272)
-        .onAppear { draft = Double(s.limit) }
+        .onAppear { draft = Double(s.limit); draftBottom = Double(s.bottom) }
         .onChange(of: s.limit) { _, new in draft = Double(new) }
+        .onChange(of: s.bottom) { _, new in draftBottom = Double(new) }
+    }
+
+    // Mockup v2: the two switches under the buttons, each with a small line that says what it does right now.
+    @ViewBuilder private var switches: some View {
+        Divider()
+        Setting(title: "Heat pause", hint: s.heatOn ? "Pauses above \(degrees(heatPauseF)).\(s.tempF.map { " Battery now \(degrees($0))." } ?? "")" : "Stop charging while the battery is warm.",
+                on: s.heatOn, set: act.heat)
+        Setting(title: "Sailing range", hint: s.sailing ? "Charges up to \(s.limit)%, then waits until \(s.bottom)%." : "Let the battery drift down a little before charging again.",
+                on: s.sailing, set: act.sailing)
+    }
+}
+
+struct Setting: View {
+    let title: String, hint: String, on: Bool
+    let set: (Bool) -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).bold()
+                Text(hint).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Toggle(title, isOn: Binding(get: { on }, set: set)).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+        }
     }
 }
 
@@ -349,6 +441,7 @@ struct Panel: View {
 struct LevelBar: View {
     let level: Int
     let marker: Int?
+    var low: Int? = nil  // the sailing range's bottom: a thin band up to the marker and a second, lighter mark
     var stretch = 0.0
     var body: some View {
         GeometryReader { g in
@@ -356,12 +449,14 @@ struct LevelBar: View {
             ZStack(alignment: .leading) {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.secondary.opacity(0.35))
+                    if let lo = low, let m = marker, m > lo { Rectangle().fill(Color.green.opacity(0.3)).frame(width: w * CGFloat(m - lo) / 100).offset(x: w * CGFloat(lo) / 100) }
                     Rectangle().fill(Color.green).frame(width: w * CGFloat(min(100, max(0, level))) / 100)
                     if case let end = marker ?? 100, end > level, stretch > 0 {  // no marker (charge to full once): sweeps to 100
                         Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(end - level) / 100 * CGFloat(stretch)).offset(x: w * CGFloat(level) / 100)
                     }
                 }.clipShape(Capsule())
                 if let m = marker { Rectangle().fill(Color.primary).frame(width: 2, height: 14).offset(x: w * CGFloat(m) / 100 - 1) }
+                if let lo = low { Rectangle().fill(Color.primary.opacity(0.55)).frame(width: 2, height: 14).offset(x: w * CGFloat(lo) / 100 - 1) }
             }
         }.frame(height: 10)
     }

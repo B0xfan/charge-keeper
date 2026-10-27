@@ -70,14 +70,19 @@ func restore(_ m: MCL, _ orig: LimitState, tries: Int = 5) -> Bool {
 // MARK: - battery state
 
 struct Battery {
-    var charging: Bool?, external: Bool?, current: Int?
+    var charging: Bool?, external: Bool?, current: Int?, tempF: Double?
 }
+// The battery reports hundredths of a degree C (3019 = 30.2°C; its stored lifetime min 5 / max 42 fit that). On this Mac it sits
+// inside BatteryData; some boots also list it at the top. Shown and compared in °F (John's choice), no unit setting.
+func fahrenheit(centiC: Int?) -> Double? { centiC.flatMap { $0 > 0 ? Double($0) / 100 * 9 / 5 + 32 : nil } }
 func battery() -> Battery {
     let svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"))
     guard svc != 0 else { return Battery() }
     defer { IOObjectRelease(svc) }
     func p(_ k: String) -> NSNumber? { IORegistryEntryCreateCFProperty(svc, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber }
-    return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: p("CurrentCapacity")?.intValue)  // CurrentCapacity is a percent on Apple silicon (MaxCapacity reads 100)
+    let data = IORegistryEntryCreateCFProperty(svc, "BatteryData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any]
+    let temp = (data?["Temperature"] as? NSNumber)?.intValue ?? p("Temperature")?.intValue
+    return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: p("CurrentCapacity")?.intValue, tempF: fahrenheit(centiC: temp))  // CurrentCapacity is a percent on Apple silicon (MaxCapacity reads 100)
 }
 
 // MARK: - a process that outlives us
