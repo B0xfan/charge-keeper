@@ -18,7 +18,7 @@ struct Snapshot: Equatable {
     var cutNote: CutNote? = nil  // under 80, but the charger cannot be switched: the Mac's own 80 holds instead
 }
 
-enum CutNote: Equatable { case noHelper, aldente, otherApp }
+enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed }
 
 // The level Charge Keeper really holds: under 80 without the charger switch, the Mac's own limit stops at 80.
 func holdLevel(_ s: Snapshot) -> Int { s.cutNote == nil ? s.limit : max(s.limit, macFloor) }
@@ -92,7 +92,12 @@ final class Keeper: ObservableObject {
     private var reassert = false
     private var woke = false
     private let charger = ChargerClient(path: helperSocket)
-    private var cutNow = false  // work queue only: the helper's last answer
+    private var cutNow = false { didSet { napGuard() } }  // work queue only: the helper's last answer
+    private var activity: NSObjectProtocol?  // while cut: keeps App Nap from stretching the 30 s check-in past the helper's 150 s
+    private func napGuard() {
+        if cutNow, activity == nil { activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Holding the charger off") }
+        if !cutNow, let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
+    }
 
     init() {
         let saved = UserDefaults.standard.integer(forKey: "limit")
@@ -106,7 +111,9 @@ final class Keeper: ObservableObject {
         if let l = limiter { installExitSafety(l) }
         registerLoginItemOnce()
         work.async { self.step() }  // the first step also cleans up a limit left by a crash or power cut (see Limiter.apply)
-        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in self.work.async { self.step() } }
+        RunLoop.main.add(Timer(timeInterval: 30, repeats: true) { _ in self.work.async { self.step() } }, forMode: .common)  // .common: keeps ticking during a slider drag
+        // AlDente started: step at once, so a cut of ours is given back before AlDente makes its own.
+        nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: nil) { _ in if aldenteRunning() { self.work.async { self.step() } } }
         nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in self.work.async { self.reassert = true; self.woke = false } }
         nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
             // Sleep may have undone the limit; step() reads it and sets it back. The Mac's charge service can be slow to answer
@@ -161,11 +168,13 @@ final class Keeper: ObservableObject {
     private func steerCharger(below: Bool, level: Int?) -> CutNote? {
         let aldente = below && aldenteRunning()
         guard below || cutNow else { return nil }
-        let want = below && !aldente && level.map { cutWanted(level: $0, limit: limit, cutNow: cutNow, lidClosed: lidClosed()) } == true
+        let lid = below && lidClosed()
+        let want = below && !aldente && level.map { cutWanted(level: $0, limit: limit, cutNow: cutNow, lidClosed: lid) } == true
         let r = charger.send(want)
         cutNow = r == replyCut
         if !below || !want && r == replyOn { charger.disconnect() }  // nothing of ours is off: no need to keep the line open
         if aldente { return .aldente }
+        if lid { return .lidClosed }
         guard below else { return nil }
         return r == replyCut || r == replyOn ? nil : r == replyBusy ? .otherApp : .noHelper
     }
@@ -395,6 +404,7 @@ func cutNoteText(_ n: CutNote) -> Text {
     case .noHelper: ("Below 80% needs the charger helper.", " It is not installed or not answering, so Charge Keeper holds at 80% for now.")
     case .aldente: ("AlDente is running.", " Charge Keeper does not switch the charger while it runs, so it holds at 80% for now.")
     case .otherApp: ("Another app has switched the charger off.", " Charge Keeper leaves it alone and holds at 80% for now.")
+    case .lidClosed: ("The lid is closed.", " Switching the charger off could put the Mac to sleep, so Charge Keeper holds at 80% until it opens.")
     }
     return Text(head).bold().foregroundColor(.orange) + Text(rest)
 }

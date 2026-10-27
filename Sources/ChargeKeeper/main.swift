@@ -29,7 +29,7 @@ final class FakeSwitch: ChargerSwitch {
 }
 
 // The helper's every safety path, on a fake switch and a scratch marker; then the real socket server and client, in-process.
-func helperSelftest(_ expect: (Bool, String) -> Void) -> Bool {
+func helperSelftest(_ expect: (Bool, String) -> Void) {
     let dir = NSTemporaryDirectory() + "keeper-selftest-\(getpid())"
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -80,7 +80,7 @@ func helperSelftest(_ expect: (Bool, String) -> Void) -> Bool {
     let sg = q.sync { ChargerGuard(fake, marker: dir + "/cut2") }
     let server = HelperServer(sg, queue: q, uid: getuid())
     let sock = dir + "/h.sock"
-    guard q.sync(execute: { server.start(path: sock) }) else { expect(false, "helper socket starts"); return false }
+    guard q.sync(execute: { server.start(path: sock) }) else { expect(false, "helper socket starts"); return }
     let c = ChargerClient(path: sock)
     expect(c.send(true) == replyCut && q.sync { fake.v } == powerOff, "socket: cut")
     c.disconnect()
@@ -89,8 +89,8 @@ func helperSelftest(_ expect: (Bool, String) -> Void) -> Bool {
     let other = HelperServer(q.sync { ChargerGuard(FakeSwitch(), marker: dir + "/cut3") }, queue: q, uid: getuid() + 1)
     expect(q.sync(execute: { other.start(path: dir + "/o.sock") }) && ChargerClient(path: dir + "/o.sock").send(true) == nil, "socket: other users are refused")
     expect(ChargerClient(path: dir + "/none.sock").send(true) == nil, "no helper installed: no answer")
+    expect(!q.sync(execute: { server.start(path: "/tmp/" + String(repeating: "x", count: 120)) }), "socket: a too-long path is refused, not shortened")
     withExtendedLifetime((server, other)) {}
-    return true
 }
 
 func selftest() -> Int32 {
@@ -139,7 +139,7 @@ func selftest() -> Int32 {
     expect(statusText(t) == "Holding at 60%", "cut inside the range")
     t = Snapshot(level: 70, plugged: true, charging: true, limit: 60, mode: .holding, cutNote: .noHelper)
     expect(statusText(t) == "Charging to 80%" && isCharging(t), "no helper: the Mac's 80 holds and the text says so")
-    expect(helperSelftest(expect), "charger helper rules")
+    helperSelftest(expect)
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
     return bad == 0 ? 0 : 1
 }

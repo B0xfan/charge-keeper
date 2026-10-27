@@ -33,7 +33,8 @@ func lidClosed() -> Bool {
     return (IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool) ?? false
 }
 
-func aldenteRunning() -> Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apphousekitchen.aldente-pro").isEmpty }
+// Any AlDente edition (John's is com.apphousekitchen.aldente-pro). Its root helper is a daemon, not listed here.
+func aldenteRunning() -> Bool { NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier?.hasPrefix("com.apphousekitchen.aldente") == true } }
 
 // MARK: - the switch
 
@@ -47,6 +48,8 @@ final class SMCSwitch: ChargerSwitch {
         guard svc != 0 else { return nil }
         defer { IOObjectRelease(svc) }
         guard IOServiceOpen(svc, mach_task_self_, 0, &conn) == KERN_SUCCESS else { return nil }
+        // Never write a key whose size is not 1 byte. A failed look ends the helper; launchd starts it again.
+        guard let i = call(9), i[28] == 1, i[29] == 0, i[30] == 0, i[31] == 0 else { return nil }  // deinit closes conn
     }
     deinit { IOServiceClose(conn) }
     private func call(_ cmd: UInt8, _ value: UInt8? = nil) -> [UInt8]? {
@@ -58,9 +61,8 @@ final class SMCSwitch: ChargerSwitch {
         let rc = b.withUnsafeBytes { i in out.withUnsafeMutableBytes { o in IOConnectCallStructMethod(conn, 2, i.baseAddress, 80, o.baseAddress, &size) } }
         return rc == KERN_SUCCESS && out[40] == 0 ? out : nil
     }
-    private var oneByte: Bool { call(9).map { $0[28] == 1 && $0[29] == 0 && $0[30] == 0 && $0[31] == 0 } ?? false }  // never write a key whose size is not 1; asked each time, so a failed look is not remembered
-    func read() -> UInt8? { oneByte ? call(5)?[48] : nil }
-    func write(_ v: UInt8) -> Bool { oneByte && call(6, v) != nil }
+    func read() -> UInt8? { call(5)?[48] }
+    func write(_ v: UInt8) -> Bool { call(6, v) != nil }
 }
 
 // MARK: - the helper's rules (one queue; pure apart from the switch and the marker file)
@@ -86,8 +88,9 @@ final class ChargerGuard {
             // The marker goes down (and to disk) before the switch, so a crash at any later point is undone at the next start.
             let f = open(marker, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0o600)
             guard f >= 0 else { return replyErr }
-            let synced = fsync(f) == 0
-            close(f)
+            let d = open((marker as NSString).deletingLastPathComponent, O_RDONLY | O_CLOEXEC)  // the folder entry too, or a crash can lose the file
+            let synced = fsync(f) == 0 && d >= 0 && fsync(d) == 0
+            close(f); if d >= 0 { close(d) }
             guard synced else { unlink(marker); return replyErr }
             ownCut = true
         }
@@ -117,8 +120,9 @@ final class ChargerGuard {
 
 // MARK: - the helper process
 
-private func unixAddress(_ path: String) -> sockaddr_un {
+private func unixAddress(_ path: String) -> sockaddr_un? {
     var a = sockaddr_un()
+    guard path.utf8.count < MemoryLayout.size(ofValue: a.sun_path) else { return nil }  // never a silently shortened path
     a.sun_family = sa_family_t(AF_UNIX)
     withUnsafeMutableBytes(of: &a.sun_path) { p in for (i, c) in path.utf8.prefix(p.count - 1).enumerated() { p[i] = c } }
     return a
@@ -140,8 +144,8 @@ final class HelperServer {
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
         guard s >= 0 else { return false }
         noSigpipeCloexec(s)
+        guard var a = unixAddress(path) else { close(s); return false }
         unlink(path)
-        var a = unixAddress(path)
         let bound = withUnsafePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(s, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } } == 0
         guard bound, chmod(path, 0o666) == 0, listen(s, 4) == 0 else { close(s); return false }  // 0666: the peer check below is the gate
         let src = DispatchSource.makeReadSource(fileDescriptor: s, queue: q)
@@ -238,7 +242,7 @@ func runHelper(_ args: [String]) -> Never {
     Thread.detachNewThread {
         while true {
             sleep(10)
-            if beat.age > 60 { if access(marker, F_OK) == 0, sw.write(powerOn) { unlink(marker) }; _exit(1) }
+            if beat.age > 60 { _exit(1) }  // the fresh helper's start-up restore() puts power back and reads it back
         }
     }
     withExtendedLifetime((server, t)) { dispatchMain() }
@@ -257,7 +261,13 @@ final class ChargerClient {
             if fd < 0 { fd = connectHelper() }
             guard fd >= 0 else { return nil }
             var b = cut ? cmdCut : cmdOn
-            if write(fd, &b, 1) == 1, read(fd, &b, 1) == 1 { return b }
+            var late = [UInt8](repeating: 0, count: 16)
+            while recv(fd, &late, late.count, MSG_DONTWAIT) > 0 {}  // a reply that came after an earlier timeout
+            if write(fd, &b, 1) == 1 {
+                let n = read(fd, &b, 1)
+                if n == 1 { return b }
+                if n < 0 && errno == EAGAIN { return nil }  // slow, not gone: keep the line, closing it would switch power back on
+            }
             close(fd); fd = -1
         }
         return nil
@@ -269,7 +279,7 @@ final class ChargerClient {
         noSigpipeCloexec(s)
         var tv = timeval(tv_sec: 3, tv_usec: 0)  // a hung helper must not hang the app's work queue
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        var a = unixAddress(path)
+        guard var a = unixAddress(path) else { close(s); return -1 }
         let ok = withUnsafePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(s, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } } == 0
         if !ok { close(s); return -1 }
         return s

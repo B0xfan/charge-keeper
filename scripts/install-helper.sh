@@ -13,9 +13,11 @@ PROMPT="Charge Keeper needs your Mac password once to control charging."
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 if [[ "${1:-}" == "--remove" ]]; then
+    # Stopping the helper switches the charger back on. If its note of a cut is still there, that failed: keep the helper.
     cat > "$STAGE/root.sh" <<EOF
 launchctl bootout system/$LABEL 2>/dev/null || true
-rm -f "$PLIST" "$BIN"
+if [ -e /var/db/$LABEL.cut ]; then launchctl bootstrap system "$PLIST"; echo "Charger power could not be confirmed back on; helper kept."; exit 1; fi
+rm -f "$PLIST" "$BIN" /var/run/$LABEL.sock
 EOF
 else
     [[ -x "$APPBIN" ]] || { echo "Charge Keeper is not installed in /Applications."; exit 1; }
@@ -39,6 +41,7 @@ EOF
     cat > "$STAGE/root.sh" <<EOF
 set -e
 launchctl bootout system/$LABEL 2>/dev/null || true
+rm -f /var/run/$LABEL.sock
 mkdir -p /Library/PrivilegedHelperTools
 install -o root -g wheel -m 755 "$STAGE/helper" "$BIN"
 install -o root -g wheel -m 644 "$STAGE/helper.plist" "$PLIST"
