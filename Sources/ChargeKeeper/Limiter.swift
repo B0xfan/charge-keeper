@@ -3,7 +3,7 @@
 // the limit needs no special permission, so nothing separate has to run.
 import Foundation
 
-enum Applied: Equatable { case ok, foreign, unsupported, failed(String) }
+enum Applied: Equatable { case ok, foreign, changed, unsupported, failed(String) }
 
 let markerURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("Charge Keeper/engaged")
@@ -12,6 +12,7 @@ final class Limiter {
     private let m: MCL
     private let lock = NSLock()
     private var orig: LimitState?  // the setting before we touched it; non-nil exactly while we own the limit
+    private var held: LimitState?  // what we last set and read back; a different reading later means someone else changed it
     private var watchdog: pid_t = 0
     private var closed = false  // set by the final release at exit, so a late timer tick cannot take the limit again
     init(_ m: MCL) { self.m = m }
@@ -27,27 +28,38 @@ final class Limiter {
         }
     }
 
-    // Holds the limit at `target`. Cheap when it already holds.
-    func apply(_ target: Int) -> Applied {
+    // Holds the limit at `target`. Cheap when it already holds. adopt: John chose "Use Charge Keeper", so a limit that is
+    // already on is taken over. reassert: just after a wake, a changed limit is set back (sleep may reset it) instead of
+    // counting as someone else's change.
+    func apply(_ target: Int, adopt: Bool = false, reassert: Bool = false) -> Applied {
         lock.lock(); defer { lock.unlock() }
         guard !closed else { return .failed("Charge Keeper is closing.") }
         guard m.supported else { return .unsupported }
         if orig == nil { clearLeftoverLocked() }
         guard let cur = m.state() else { return .failed("Could not read the Mac's charge limit.") }
+        let want = LimitState(enabled: true, limit: target)
         if orig == nil {
-            guard !cur.enabled else { return .foreign }  // the Mac's own limit (or another app's) is on: do not fight it
-            guard startWatchdog(cur) else { return .failed("Could not start the safety watchdog, so nothing was changed.") }
-            orig = cur
+            guard !cur.enabled || adopt else { return .foreign }  // the Mac's own limit (or another app's) is on: only John's choice takes it over
+            // Taken over or not, giving it back means charging back to normal, as the Quit button says.
+            let back = LimitState(enabled: false, limit: cur.limit)
+            guard startWatchdog(back) else { return .failed("Could not start the safety watchdog, so nothing was changed.") }
+            orig = back
         } else {
             // waitpid, not kill(,0): a dead watchdog stays a zombie, which kill(,0) still calls alive. Failure retries next tick.
             if watchdog <= 0 || waitpid(watchdog, nil, WNOHANG) != 0, let o = orig { watchdog = 0; _ = startWatchdog(o) }
-            if cur == LimitState(enabled: true, limit: target) { return .ok }
+            if cur == want { held = want; return .ok }
+            // System Settings or another app (AlDente) changed it while we held: step aside, leave their setting as it is.
+            if !reassert, let h = held, cur != h { disownLocked(); return .changed }
         }
         guard m.setLimit(target) else { return fail("macOS refused the limit \(target)%") }
         if m.enabled() != true { m.enable() }  // setting the level may already switch it on
-        guard m.state() == LimitState(enabled: true, limit: target) else { return fail("macOS did not keep the limit \(target)%") }
+        guard m.state() == want else { return fail("macOS did not keep the limit \(target)%") }
+        held = want
         return .ok
     }
+
+    // Read only, for showing the Mac's own limit while Charge Keeper is not holding.
+    func current() -> LimitState? { lock.lock(); defer { lock.unlock() }; return m.state() }
 
     // Safe to call from anywhere, any number of times. True when nothing of ours is left on.
     @discardableResult func release(final: Bool = false) -> Bool {
@@ -64,10 +76,15 @@ final class Limiter {
     private func releaseLocked() -> Bool {
         guard let o = orig else { return true }
         guard restore(m, o) else { return false }  // stays armed: the watchdog and the next start-up check still cover it
-        orig = nil
-        try? FileManager.default.removeItem(at: markerURL)
-        if watchdog > 0 { kill(watchdog, SIGKILL); waitpid(watchdog, nil, 0); watchdog = 0 }  // it only exits; we already restored
+        disownLocked()
         return true
+    }
+
+    // Forget the limit without touching it: after a restore, or when someone else has changed it.
+    private func disownLocked() {
+        orig = nil; held = nil
+        try? FileManager.default.removeItem(at: markerURL)
+        if watchdog > 0 { kill(watchdog, SIGKILL); waitpid(watchdog, nil, 0); watchdog = 0 }  // SIGKILL: it only exits, it never restores
     }
 
     // The watchdog says "r" once its own PowerUI client works; no "r" (it died or hung) means no change is made.

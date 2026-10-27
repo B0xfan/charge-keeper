@@ -34,6 +34,12 @@ func selftest() -> Int32 {
     expect(statusText(s) == "Charging to full, once", "charge to full once")
     s.mode = .foreign
     expect(statusText(s) == "Not holding yet", "the Mac's own limit is on")
+    s.mode = .steppedAside
+    expect(statusText(s) == "Stepped aside" && showsChoice(s.mode) && !isCharging(s), "stepped aside: choice shown, no animation")
+    s.mode = .macLimit; s.mac = LimitState(enabled: true, limit: 90)
+    expect(statusText(s) == "Mac's limit: 90%" && !showsChoice(s.mode) && !isCharging(s), "the Mac's own limit chosen: level only")
+    s.mac = LimitState(enabled: false, limit: 100)
+    expect(statusText(s) == "No limit on", "the Mac's own limit chosen but off")
     expect(shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: false), "login item: installed copy, first time")
     expect(!shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: true), "login item: asked only once")
     expect(!shouldRegisterLoginItem(path: "/Users/x/charge-keeper/build/Charge Keeper.app", asked: false), "login item: never for a build-folder copy")

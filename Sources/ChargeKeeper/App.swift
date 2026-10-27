@@ -1,10 +1,11 @@
-// The menu-bar app, following the approved mockup v1 (panels 1 to 3; panel 4 is the note without its choice buttons,
-// panel 5 is dropped: no password is needed).
+// The menu-bar app, following the approved mockup v1 (panels 1 to 4; panel 5 is dropped: no password is needed).
+// Panel 4's choice is also shown when someone else changes the limit while Charge Keeper holds (it steps aside instead of setting it back).
 import SwiftUI
 import AppKit
 import ServiceManagement
 
-enum Mode: Equatable { case starting, holding, fullOnce, foreign, unsupported, failed(String) }
+// foreign: the Mac's limit was already on; steppedAside: it was changed while we held; macLimit: John chose the Mac's own limit.
+enum Mode: Equatable { case starting, holding, fullOnce, foreign, steppedAside, macLimit, unsupported, failed(String) }
 
 struct Snapshot: Equatable {
     var level = 0
@@ -12,7 +13,11 @@ struct Snapshot: Equatable {
     var charging = false
     var limit = 80
     var mode = Mode.starting
+    var mac: LimitState? = nil  // the Mac's own setting, read only while Charge Keeper is not holding
 }
+
+// The panels that show the Mac's own limit instead of Charge Keeper's slider.
+func showsChoice(_ m: Mode) -> Bool { m == .foreign || m == .steppedAside }
 
 let limitRange = 50...100  // the approved mockup's slider; macOS accepted 89 in Phase 1, whether it holds under 80 is for the app tests to show
 
@@ -23,6 +28,8 @@ func statusText(_ s: Snapshot) -> String {
     case .starting: return "Starting"
     case .unsupported: return "This Mac has no charge limit"
     case .foreign: return "Not holding yet"
+    case .steppedAside: return "Stepped aside"
+    case .macLimit: return s.mac.map { $0.enabled ? "Mac's limit: \($0.limit)%" : "No limit on" } ?? "Mac's limit"
     case .failed: return "Could not set the limit"
     case .holding, .fullOnce:
         if !s.plugged { return "On battery" }
@@ -63,6 +70,10 @@ final class Keeper: ObservableObject {
     private let work = DispatchQueue(label: "keeper.work")  // every Mac-limit call happens here, never on the screen thread
     private var limit: Int  // work queue only
     private var fullOnce = false  // work queue only
+    private var useMac = UserDefaults.standard.bool(forKey: "useMacLimit")  // work queue only: John chose the Mac's own limit
+    private var aside = false  // work queue only: someone else changed the limit while we held; wait for John's choice
+    private var adopt = false  // work queue only: one step may take over a limit that is already on
+    private var reassertUntil = Date.distantPast  // work queue only: from sleep until shortly after wake
 
     init() {
         let saved = UserDefaults.standard.integer(forKey: "limit")
@@ -77,9 +88,11 @@ final class Keeper: ObservableObject {
         registerLoginItemOnce()
         work.async { self.step() }  // the first step also cleans up a limit left by a crash or power cut (see Limiter.apply)
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in self.work.async { self.step() } }
-        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
-            // Sleep may have undone the limit; step() reads it and re-applies. The Mac's charge service can be slow
-            // to answer right after wake, so ask again a little later instead of waiting for the 30 s tick.
+        nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in self.work.async { self.reassertUntil = .distantFuture } }
+        nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
+            // Sleep may have undone the limit; step() reads it and sets it back (not counted as someone else's change until
+            // a little after wake). The Mac's charge service can be slow to answer right after wake, so ask again a little later.
+            self.work.async { self.reassertUntil = Date() + (wakeChecks.last ?? 0) + 5 }
             for delay in wakeChecks { self.work.asyncAfter(deadline: .now() + delay) { self.step() } }
         }
     }
@@ -88,20 +101,29 @@ final class Keeper: ObservableObject {
     private func step() {
         let b = battery()
         var mode = Mode.unsupported
+        var mac: LimitState? = nil
         if let l = limiter {
             if fullOnce && (b.current ?? 0) >= 100 { fullOnce = false }  // the one-off ends by itself
-            if fullOnce {
+            if useMac {
+                // Normally a no-op (the choice is offered only while we hold nothing); covers a tick that took over just before the click.
+                mode = l.release() ? .macLimit : .failed("Could not put charging back to normal")
+            } else if aside {
+                mode = .steppedAside
+            } else if fullOnce {
                 mode = l.release() ? .fullOnce : .failed("Could not put charging back to normal")
             } else {
-                switch l.apply(limit) {
+                switch l.apply(limit, adopt: adopt, reassert: Date() < reassertUntil) {
                 case .ok: mode = .holding
                 case .foreign: mode = .foreign
+                case .changed: aside = true; mode = .steppedAside
                 case .unsupported: mode = .unsupported
                 case .failed(let why): mode = .failed(why)
                 }
+                adopt = false
             }
+            if showsChoice(mode) || mode == .macLimit { mac = l.current() }
         }
-        let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode)
+        let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac)
         DispatchQueue.main.async {
             self.snap = s
             let before = self.anim
@@ -135,6 +157,13 @@ final class Keeper: ObservableObject {
     func setLimit(_ v: Int) { work.async { self.limit = clampLimit(v); UserDefaults.standard.set(self.limit, forKey: "limit"); self.step() } }
     func chargeToFullOnce() { work.async { self.fullOnce = true; self.step() } }
     func backToLimit() { work.async { self.fullOnce = false; self.step() } }
+    // Panel 4's choice. Charge Keeper: take over the limit that is on now. The Mac's own: Charge Keeper only shows the level, also after a restart.
+    func choose(macLimit: Bool) {
+        work.async {
+            self.useMac = macLimit; UserDefaults.standard.set(macLimit, forKey: "useMacLimit")
+            self.aside = false; self.adopt = !macLimit; self.step()
+        }
+    }
     func quit() { NSApplication.shared.terminate(nil) }  // ends in exit(), whose handler puts charging back first
 }
 
@@ -202,7 +231,7 @@ func runApp() -> Never {
 struct PanelHost: View {
     @ObservedObject var keeper: Keeper
     var body: some View {
-        Panel(s: keeper.snap, bar: keeper.bar, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, quit: keeper.quit))
+        Panel(s: keeper.snap, bar: keeper.bar, act: PanelActions(setLimit: keeper.setLimit, full: keeper.chargeToFullOnce, back: keeper.backToLimit, choose: keeper.choose, quit: keeper.quit))
     }
 }
 
@@ -210,6 +239,7 @@ struct PanelActions {
     var setLimit: (Int) -> Void = { _ in }
     var full: () -> Void = {}
     var back: () -> Void = {}
+    var choose: (Bool) -> Void = { _ in }  // true: the Mac's own limit
     var quit: () -> Void = {}
 }
 
@@ -227,11 +257,18 @@ struct Panel: View {
                 Spacer()
                 Text(statusText(s)).foregroundStyle(.secondary)
             }
-            if s.mode != .foreign { LevelBar(level: s.level, marker: s.mode == .holding ? s.limit : nil, stretch: isCharging(s) ? bar : 0) }
+            if !showsChoice(s.mode) { LevelBar(level: s.level, marker: s.mode == .holding ? s.limit : s.mode == .macLimit && s.mac?.enabled == true ? s.mac?.limit : nil, stretch: isCharging(s) ? bar : 0) }
             switch s.mode {
-            case .foreign:
-                Note(Text("Your Mac has its own charge limit turned on.").bold().foregroundColor(.orange)
-                    + Text(" Two limits can get in each other's way, so Charge Keeper is waiting. Turn off the Mac's limit in Battery settings and Charge Keeper takes over by itself."))
+            case .foreign, .steppedAside:
+                Note((s.mode == .foreign ? Text("Your Mac has its own charge limit turned on.")
+                      : Text("The charge limit was changed outside Charge Keeper\(s.mac.map { $0.enabled ? " (now \($0.limit)%)" : " (now off)" } ?? "").")).bold().foregroundColor(.orange)
+                    + Text(s.mode == .foreign ? " Two limits can get in each other's way, so Charge Keeper is waiting. Pick the one you want."
+                           : " Charge Keeper stepped aside instead of changing it back. Pick the one you want."))
+                Choice(limit: s.limit, choose: act.choose)
+            case .macLimit:
+                Note(Text(s.mac?.enabled == false ? "You chose the Mac's own limit, and it is off now." : "The Mac's own limit is in charge.").bold().foregroundColor(.orange)
+                    + Text(" Charge Keeper only shows the level."))
+                Button { act.choose(false) } label: { Text("Use Charge Keeper instead").frame(maxWidth: .infinity) }
             case .unsupported:
                 Note(Text("This Mac has no built-in charge limit.").bold().foregroundColor(.orange) + Text(" Charge Keeper cannot hold a level here."))
             case .failed(let why):
@@ -251,9 +288,9 @@ struct Panel: View {
                 Button { act.full() } label: { Text("Charge to full once").frame(maxWidth: .infinity) }
             }
             Divider()
-            Button("Quit (charging turns back on)") { act.quit() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+            Button(s.mode == .holding || s.mode == .fullOnce ? "Quit (charging turns back on)" : "Quit") { act.quit() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
         }
-        .padding(14).frame(width: s.mode == .foreign ? 300 : 272)
+        .padding(14).frame(width: showsChoice(s.mode) || s.mode == .macLimit ? 300 : 272)
         .onAppear { draft = Double(s.limit) }
         .onChange(of: s.limit) { _, new in draft = Double(new) }
     }
@@ -278,6 +315,39 @@ struct LevelBar: View {
                 if let m = marker { Rectangle().fill(Color.primary).frame(width: 2, height: 14).offset(x: w * CGFloat(m) / 100 - 1) }
             }
         }.frame(height: 10)
+    }
+}
+
+// Mockup v1 panel 4: two options, then one button that applies the picked one.
+struct Choice: View {
+    let limit: Int
+    let choose: (Bool) -> Void
+    @State private var mac = false
+    var body: some View {
+        VStack(spacing: 12) {
+            VStack(spacing: 6) {
+                option(false, "Use Charge Keeper", "Charge Keeper turns off the Mac's limit and holds at \(limit)%.")
+                option(true, "Use the Mac's own limit", "Charge Keeper steps aside and only shows the level.")
+            }
+            Button { choose(mac) } label: { Text("Use this choice").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
+        }
+    }
+    private func option(_ value: Bool, _ title: String, _ detail: String) -> some View {
+        Button { mac = value } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: mac == value ? "record.circle.fill" : "circle").foregroundStyle(mac == value ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8).contentShape(Rectangle())
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.15)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(mac == value ? .isSelected : [])
     }
 }
 
