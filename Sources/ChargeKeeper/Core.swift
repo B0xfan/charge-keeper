@@ -72,17 +72,25 @@ func restore(_ m: MCL, _ orig: LimitState, tries: Int = 5) -> Bool {
 struct Battery {
     var charging: Bool?, external: Bool?, current: Int?, tempF: Double?
 }
-// The battery reports hundredths of a degree C (3019 = 30.2°C; its stored lifetime min 5 / max 42 fit that). On this Mac it sits
-// inside BatteryData; some boots also list it at the top. Shown and compared in °F (John's choice), no unit setting.
+// The battery reports hundredths of a degree C (3019 = 30.2°C; its stored lifetime min 5 / max 42 fit that). Shown and compared
+// in °F (John's choice), no unit setting. Where it sits moves between boots and macOS versions: at the battery's top level, in its
+// BatteryData, or (macOS 27, seen 2026-10-27) only in the BatteryData of the AppleSmartBatteryPack below it.
+func batteryTempCentiC(_ svc: io_service_t) -> Int? {
+    func prop(_ e: io_registry_entry_t, _ k: String) -> Any? { IORegistryEntryCreateCFProperty(e, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() }
+    func inData(_ e: io_registry_entry_t) -> Int? { ((prop(e, "BatteryData") as? NSDictionary)?["Temperature"] as? NSNumber)?.intValue }
+    if let t = (prop(svc, "Temperature") as? NSNumber)?.intValue ?? inData(svc) { return t }
+    let pack = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBatteryPack"))
+    guard pack != 0 else { return nil }
+    defer { IOObjectRelease(pack) }
+    return inData(pack)
+}
 func fahrenheit(centiC: Int?) -> Double? { centiC.flatMap { $0 > 0 ? Double($0) / 100 * 9 / 5 + 32 : nil } }
 func battery() -> Battery {
     let svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"))
     guard svc != 0 else { return Battery() }
     defer { IOObjectRelease(svc) }
     func p(_ k: String) -> NSNumber? { IORegistryEntryCreateCFProperty(svc, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber }
-    let data = IORegistryEntryCreateCFProperty(svc, "BatteryData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any]
-    let temp = (data?["Temperature"] as? NSNumber)?.intValue ?? p("Temperature")?.intValue
-    return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: p("CurrentCapacity")?.intValue, tempF: fahrenheit(centiC: temp))  // CurrentCapacity is a percent on Apple silicon (MaxCapacity reads 100)
+    return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: p("CurrentCapacity")?.intValue, tempF: fahrenheit(centiC: batteryTempCentiC(svc)))  // CurrentCapacity is a percent on Apple silicon (MaxCapacity reads 100)
 }
 
 // MARK: - a process that outlives us
