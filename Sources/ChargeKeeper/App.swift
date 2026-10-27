@@ -116,11 +116,12 @@ final class Keeper: ObservableObject {
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if charging && !reduced && !screensAsleep {
             guard animTimer == nil else { return }
-            let t = Timer(timeInterval: 1.0 / 12, repeats: true) { [weak self] _ in
+            let t = Timer(timeInterval: 1 / sweepFPS, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 let f = sweepAmount(Date.timeIntervalSinceReferenceDate)
                 if f != self.anim { self.anim = f }  // the rest at the end of each round publishes nothing
             }
+            t.tolerance = 0.1  // no need for exact ticks at a few per second; lets macOS batch wake-ups
             RunLoop.main.add(t, forMode: .common)  // .common: keeps moving while the slider is dragged
             animTimer = t
         } else {
@@ -171,8 +172,9 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
     }
 
     private var closedAt = Date.distantPast
+    private let reopenGuard = 0.3  // seconds: a click this soon after a close is the same click
     // A click on the icon while the panel is open first closes it (click-away, at mouse-down), then arrives here within the same event: that click must not reopen it.
-    @objc private func toggle() { if popover.isShown { popover.performClose(nil) } else if Date().timeIntervalSince(closedAt) > 0.3 { show() } }
+    @objc private func toggle() { if popover.isShown { popover.performClose(nil) } else if Date().timeIntervalSince(closedAt) > reopenGuard { show() } }
 
     private func show() {
         guard let b = item.button else { return }
@@ -181,7 +183,10 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         NSApp.activate(ignoringOtherApps: true)  // an accessory app is not active by default, so the slider and the click-away would not work
     }
 
-    func popoverWillClose(_ notification: Notification) { closedAt = Date() }  // will, not did: did comes after the close animation
+    // will, not did: did comes after the close animation. Only a fresh mouse-down on our own button counts (currentEvent can be a stale one after Cmd-Tab): Esc or a click elsewhere must not block a real click soon after.
+    func popoverWillClose(_ notification: Notification) {
+        if let e = NSApp.currentEvent, e.type == .leftMouseDown, e.window === item.button?.window, ProcessInfo.processInfo.systemUptime - e.timestamp < reopenGuard { closedAt = Date() }
+    }
     func popoverDidClose(_ notification: Notification) { keeper.panel(open: false) }
 }
 

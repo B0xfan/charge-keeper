@@ -44,6 +44,8 @@ func liveChargingIcon(level: Int, fill: Double) -> NSImage {
     }
 }
 
+let sweepFPS = 3.0  // picture changes per second at most: each change costs the CPU about 1 to 2% (macOS re-copies the menu-bar item)
+
 // One 2 second round, as in the approved mockup: grows from a sliver to full over the first 80%, rests, starts over (ease in-out).
 func sweepAmount(_ t: Double) -> Double {
     let x = min(1, (t.truncatingRemainder(dividingBy: 2)) / 2 / 0.8)
@@ -52,7 +54,7 @@ func sweepAmount(_ t: Double) -> Double {
 
 // The digits as one outline (medium, equal-width), centred on a point, for a flipped (y down) drawing.
 // The outline path, not styled text, because stroking styled text leaves stray lines where glyph parts overlap.
-private var digitsCache: (level: Int, path: CGPath)?  // the icon is redrawn 12 times a second, the level changes rarely
+private var digitsCache: (level: Int, path: CGPath)?  // the icon is redrawn a few times a second, the level changes rarely
 private func digitsPath(_ level: Int) -> CGPath {
     if let c = digitsCache, c.level == level { return c.path }
     let text = "\(level)", centreX: CGFloat = 13.5, centreY: CGFloat = 7.9
