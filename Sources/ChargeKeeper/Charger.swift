@@ -7,6 +7,7 @@
 // at a hard battery floor, and from a dead-man thread if its own queue stops. A cut it did not make (AlDente's) is never touched.
 import Foundation
 import IOKit
+import IOKit.pwr_mgt
 import AppKit
 
 let macFloor = 80   // the lowest level the Mac's own limit accepts

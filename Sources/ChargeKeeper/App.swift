@@ -357,7 +357,7 @@ struct LevelBar: View {
                     Capsule().fill(Color.secondary.opacity(0.35))
                     Rectangle().fill(Color.green).frame(width: w * CGFloat(min(100, max(0, level))) / 100)
                     if case let end = marker ?? 100, end > level, stretch > 0 {  // no marker (charge to full once): sweeps to 100
-                        Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(end - level) / 100 * stretch).offset(x: w * CGFloat(level) / 100)
+                        Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(end - level) / 100 * CGFloat(stretch)).offset(x: w * CGFloat(level) / 100)
                     }
                 }.clipShape(Capsule())
                 if let m = marker { Rectangle().fill(Color.primary).frame(width: 2, height: 14).offset(x: w * CGFloat(m) / 100 - 1) }
