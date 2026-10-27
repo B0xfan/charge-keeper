@@ -16,7 +16,7 @@ if [[ "${1:-}" == "--remove" ]]; then
     # Stopping the helper switches the charger back on. If its note of a cut is still there, that failed: keep the helper.
     cat > "$STAGE/root.sh" <<EOF
 launchctl bootout system/$LABEL 2>/dev/null || true
-if [ -e /var/db/$LABEL.cut ]; then launchctl bootstrap system "$PLIST"; echo "Charger power could not be confirmed back on; helper kept."; exit 1; fi
+if [ -e /var/db/$LABEL.cut ]; then launchctl bootstrap system "$PLIST"; echo "Charger power could not be confirmed back on; helper kept." >&2; exit 1; fi
 rm -f "$PLIST" "$BIN" /var/run/$LABEL.sock
 EOF
 else

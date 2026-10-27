@@ -4,7 +4,9 @@
 // root, so a small helper does it: this program with --helper, started by launchd as root (scripts/install-helper.sh).
 // The helper owns the safety: power goes back on when the app's connection closes (quit, crash, force-quit), when the app
 // stops checking in (hung), before sleep, at the helper's own start (boot, or a restart after it died), on a stop signal,
-// at a hard battery floor, and from a dead-man thread if its own queue stops. A cut it did not make (AlDente's) is never touched.
+// at a hard battery floor, and from a dead-man thread if its own queue stops (it tries, then exits so launchd starts a fresh one).
+// A cut it did not make (AlDente's) is never touched. shortcut: the chip has one switch, so an AlDente cut made in the same moment
+// ours is given back is undone with it; the app gives ours back as soon as AlDente starts, which keeps that window to a moment.
 import Foundation
 import IOKit
 import IOKit.pwr_mgt
@@ -125,7 +127,7 @@ private func unixAddress(_ path: String) -> sockaddr_un? {
     var a = sockaddr_un()
     guard path.utf8.count < MemoryLayout.size(ofValue: a.sun_path) else { return nil }  // never a silently shortened path
     a.sun_family = sa_family_t(AF_UNIX)
-    withUnsafeMutableBytes(of: &a.sun_path) { p in for (i, c) in path.utf8.prefix(p.count - 1).enumerated() { p[i] = c } }
+    withUnsafeMutableBytes(of: &a.sun_path) { p in for (i, c) in path.utf8.enumerated() { p[i] = c } }
     return a
 }
 private func noSigpipeCloexec(_ fd: Int32) {
@@ -239,11 +241,15 @@ func runHelper(_ args: [String]) -> Never {
     t.schedule(deadline: .now() + 5, repeating: 5)
     t.setEventHandler { beat.set(); g.tick(now: ProcessInfo.processInfo.systemUptime, level: battery().current) }
     t.resume()
-    // Dead man: if the queue stops answering, put power back from this thread and exit; launchd starts a fresh helper.
+    // Dead man: if the queue stops answering, try power-on from a spare thread (it may hang on the same chip call), then exit
+    // regardless; launchd starts a fresh helper, whose start-up restore() tries again and reads it back.
     Thread.detachNewThread {
         while true {
             sleep(10)
-            if beat.age > 60 { _exit(1) }  // the fresh helper's start-up restore() puts power back and reads it back
+            guard beat.age > 60 else { continue }
+            Thread.detachNewThread { if access(marker, F_OK) == 0, sw.write(powerOn), sw.read() == powerOn { unlink(marker) } }
+            sleep(2)
+            _exit(1)
         }
     }
     withExtendedLifetime((server, t)) { dispatchMain() }
@@ -262,14 +268,8 @@ final class ChargerClient {
             if fd < 0 { fd = connectHelper() }
             guard fd >= 0 else { return nil }
             var b = cut ? cmdCut : cmdOn
-            var late = [UInt8](repeating: 0, count: 16)
-            while recv(fd, &late, late.count, MSG_DONTWAIT) > 0 {}  // a reply that came after an earlier timeout
-            if write(fd, &b, 1) == 1 {
-                let n = read(fd, &b, 1)
-                if n == 1 { return b }
-                if n < 0 && errno == EAGAIN { return nil }  // slow, not gone: keep the line, closing it would switch power back on
-            }
-            close(fd); fd = -1
+            if write(fd, &b, 1) == 1, read(fd, &b, 1) == 1 { return b }
+            close(fd); fd = -1  // also on a slow reply: closing makes the helper put power back, and no late reply is misread later
         }
         return nil
     }

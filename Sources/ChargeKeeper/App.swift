@@ -174,9 +174,10 @@ final class Keeper: ObservableObject {
         cutNow = r == replyCut
         if !below || !want && r == replyOn { charger.disconnect() }  // nothing of ours is off: no need to keep the line open
         if aldente { return .aldente }
-        if lid { return .lidClosed }
         guard below else { return nil }
-        return r == replyCut || r == replyOn ? nil : r == replyBusy ? .otherApp : .noHelper
+        if r == replyBusy { return .otherApp }
+        if r != replyCut && r != replyOn { return .noHelper }
+        return lid ? .lidClosed : nil
     }
 
     // Main thread. The timer runs only while charging with a screen awake; any other state stops it and shows today's plain icon.

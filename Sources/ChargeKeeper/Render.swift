@@ -39,6 +39,7 @@ private struct Stage: View {
         ("below80-coming-down", Snapshot(level: 72, plugged: false, charging: false, limit: 60, mode: .holding, cut: true)),
         ("below80-holding", Snapshot(level: 58, plugged: false, charging: false, limit: 60, mode: .holding, cut: true)),
         ("below80-no-helper", Snapshot(level: 70, plugged: true, charging: true, limit: 60, mode: .holding, cutNote: .noHelper)),
+        ("below80-lid-closed", Snapshot(level: 70, plugged: true, charging: true, limit: 60, mode: .holding, cutNote: .lidClosed)),
         ("below80-aldente", Snapshot(level: 80, plugged: true, charging: false, limit: 60, mode: .holding, cutNote: .aldente)),
     ]
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
