@@ -172,8 +172,9 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
     }
 
     private var closedAt = Date.distantPast
+    private let reopenGuard = 0.3  // seconds: a click this soon after a close is the same click
     // A click on the icon while the panel is open first closes it (click-away, at mouse-down), then arrives here within the same event: that click must not reopen it.
-    @objc private func toggle() { if popover.isShown { popover.performClose(nil) } else if Date().timeIntervalSince(closedAt) > 0.3 { show() } }
+    @objc private func toggle() { if popover.isShown { popover.performClose(nil) } else if Date().timeIntervalSince(closedAt) > reopenGuard { show() } }
 
     private func show() {
         guard let b = item.button else { return }
@@ -184,7 +185,7 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
 
     // will, not did: did comes after the close animation. Only a fresh mouse-down on our own button counts (currentEvent can be a stale one after Cmd-Tab): Esc or a click elsewhere must not block a real click soon after.
     func popoverWillClose(_ notification: Notification) {
-        if let e = NSApp.currentEvent, e.type == .leftMouseDown, e.window === item.button?.window, ProcessInfo.processInfo.systemUptime - e.timestamp < 0.3 { closedAt = Date() }
+        if let e = NSApp.currentEvent, e.type == .leftMouseDown, e.window === item.button?.window, ProcessInfo.processInfo.systemUptime - e.timestamp < reopenGuard { closedAt = Date() }
     }
     func popoverDidClose(_ notification: Notification) { keeper.panel(open: false) }
 }
