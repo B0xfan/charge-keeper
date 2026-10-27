@@ -100,7 +100,8 @@ func spawnDetached(_ args: [String], stdoutFd: Int32) -> pid_t? {
     var none = sigset_t()
     sigemptyset(&none)
     posix_spawnattr_setsigmask(&attr, &none)  // the work thread has SIGTERM blocked, and a child inherits that mask
-    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+    // CLOEXEC_DEFAULT: only the descriptors below reach the child. An inherited helper connection would stay open after the app dies.
+    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT))
     var fa: posix_spawn_file_actions_t? = nil
     posix_spawn_file_actions_init(&fa)
     posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0)

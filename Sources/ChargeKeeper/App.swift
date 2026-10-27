@@ -14,14 +14,21 @@ struct Snapshot: Equatable {
     var limit = 80
     var mode = Mode.starting
     var mac: LimitState? = nil  // the Mac's own setting, read only while Charge Keeper is not holding
+    var cut = false  // under 80: the charger's power is switched off, the Mac runs on its battery
+    var cutNote: CutNote? = nil  // under 80, but the charger cannot be switched: the Mac's own 80 holds instead
 }
+
+enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed }
+
+// The level Charge Keeper really holds: under 80 without the charger switch, the Mac's own limit stops at 80.
+func holdLevel(_ s: Snapshot) -> Int { s.cutNote == nil ? s.limit : max(s.limit, macFloor) }
 
 // The panels that show the Mac's own limit instead of Charge Keeper's slider.
 func showsChoice(_ m: Mode) -> Bool { m == .foreign || m == .steppedAside }
 // Charge Keeper has let the Mac's limit be (Quit changes nothing then).
 func notHolding(_ m: Mode) -> Bool { showsChoice(m) || m == .macLimit }
 
-let limitRange = 50...100  // the approved mockup's slider; macOS accepted 89 in Phase 1, whether it holds under 80 is for the app tests to show
+let limitRange = 50...100  // the approved mockup's slider; 80 and up is the Mac's own limit, under 80 the charger switch (Charger.swift)
 
 func clampLimit(_ v: Int) -> Int { min(limitRange.upperBound, max(limitRange.lowerBound, v / 5 * 5)) }
 
@@ -34,15 +41,17 @@ func statusText(_ s: Snapshot) -> String {
     case .macLimit: return s.mac.map { $0.enabled ? "Mac's limit: \($0.limit)%" : "No limit on" } ?? "Mac's limit"
     case .failed: return "Could not set the limit"
     case .holding, .fullOnce:
+        if s.cut { return s.level > s.limit ? "Coming down to \(s.limit)%" : "Holding at \(s.limit)%" }
         if !s.plugged { return "On battery" }
         if s.mode == .fullOnce { return "Charging to full, once" }
-        return s.charging && s.level < s.limit ? "Charging to \(s.limit)%" : "Holding at \(s.limit)%"
+        let h = holdLevel(s)
+        return s.charging && s.level < h ? "Charging to \(h)%" : "Holding at \(h)%"
     }
 }
 
 // Actually charging (same test as the status line): this is what drives the green movement.
 func isCharging(_ s: Snapshot) -> Bool {
-    s.plugged && s.charging && (s.mode == .fullOnce || (s.mode == .holding && s.level < s.limit))
+    s.plugged && s.charging && !s.cut && (s.mode == .fullOnce || (s.mode == .holding && s.level < holdLevel(s)))
 }
 
 // The animation is one number, 0...1 (see sweepAmount): the icon's green and the panel bar's stretch both follow it.
@@ -82,6 +91,13 @@ final class Keeper: ObservableObject {
     // A sleep without a wake would leave it on until the next wake; fine, as that is the old behaviour (set back), never a lost limit.
     private var reassert = false
     private var woke = false
+    private let charger = ChargerClient(path: helperSocket)
+    private var cutNow = false { didSet { napGuard() } }  // work queue only: the helper's last answer
+    private var activity: NSObjectProtocol?  // while cut: keeps App Nap from stretching the 30 s check-in past the helper's 150 s
+    private func napGuard() {
+        if cutNow, activity == nil { activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Holding the charger off") }
+        if !cutNow, let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
+    }
 
     init() {
         let saved = UserDefaults.standard.integer(forKey: "limit")
@@ -95,7 +111,9 @@ final class Keeper: ObservableObject {
         if let l = limiter { installExitSafety(l) }
         registerLoginItemOnce()
         work.async { self.step() }  // the first step also cleans up a limit left by a crash or power cut (see Limiter.apply)
-        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in self.work.async { self.step() } }
+        RunLoop.main.add(Timer(timeInterval: 30, repeats: true) { _ in self.work.async { self.step() } }, forMode: .common)  // .common: keeps ticking during a slider drag
+        // AlDente started: step at once, so a cut of ours is given back before AlDente makes its own.
+        nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: nil) { _ in if aldenteRunning() { self.work.async { self.step() } } }
         nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: nil) { _ in self.work.async { self.reassert = true; self.woke = false } }
         nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: nil) { _ in
             // Sleep may have undone the limit; step() reads it and sets it back. The Mac's charge service can be slow to answer
@@ -120,7 +138,7 @@ final class Keeper: ObservableObject {
             } else if fullOnce {
                 mode = l.release() ? .fullOnce : .failed("Could not put charging back to normal")
             } else {
-                let r = l.apply(limit, adopt: adopt, reassert: reassert)
+                let r = l.apply(max(limit, macFloor), adopt: adopt, reassert: reassert)  // under 80 the Mac's 80 is the backstop
                 switch r {
                 case .ok: mode = .holding
                 case .foreign: mode = .foreign
@@ -135,13 +153,31 @@ final class Keeper: ObservableObject {
             }
             if notHolding(mode) { mac = l.current() }
         }
-        let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac)
+        let note = steerCharger(below: mode == .holding && limit < macFloor, level: b.current)
+        let s = Snapshot(level: b.current ?? 0, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note)
         DispatchQueue.main.async {
             self.snap = s
             let before = self.anim
             self.refreshAnimation()
             if self.anim == before { self.onIcon() }  // a changed anim has already redrawn the icon (its didSet)
         }
+    }
+
+    // Work queue. Under 80: asks the helper each step (which also tells it the app is alive) to switch the charger off at the
+    // limit or on again. Otherwise only a cut of ours is given back. AlDente running: Charge Keeper does not switch the charger.
+    private func steerCharger(below: Bool, level: Int?) -> CutNote? {
+        let aldente = below && aldenteRunning()
+        guard below || cutNow else { return nil }
+        let lid = below && lidClosed()
+        let want = below && !aldente && level.map { cutWanted(level: $0, limit: limit, cutNow: cutNow, lidClosed: lid) } == true
+        let r = charger.send(want)
+        cutNow = r == replyCut
+        if !below || !want && r == replyOn { charger.disconnect() }  // nothing of ours is off: no need to keep the line open
+        if aldente { return .aldente }
+        guard below else { return nil }
+        if r == replyBusy { return .otherApp }
+        if r != replyCut && r != replyOn { return .noHelper }
+        return lid ? .lidClosed : nil
     }
 
     // Main thread. The timer runs only while charging with a screen awake; any other state stops it and shows today's plain icon.
@@ -297,6 +333,7 @@ struct Panel: View {
                     }
                     HStack { Text("\(limitRange.lowerBound)%"); Spacer(); Text("\(limitRange.upperBound)%") }.font(.caption).foregroundStyle(.secondary)
                 }
+                if let n = s.cutNote { Note(cutNoteText(n)) }
                 Button { act.full() } label: { Text("Charge to full once").frame(maxWidth: .infinity) }
             }
             Divider()
@@ -321,7 +358,7 @@ struct LevelBar: View {
                     Capsule().fill(Color.secondary.opacity(0.35))
                     Rectangle().fill(Color.green).frame(width: w * CGFloat(min(100, max(0, level))) / 100)
                     if case let end = marker ?? 100, end > level, stretch > 0 {  // no marker (charge to full once): sweeps to 100
-                        Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(end - level) / 100 * stretch).offset(x: w * CGFloat(level) / 100)
+                        Rectangle().fill(Color.green.opacity(0.55)).frame(width: w * CGFloat(end - level) / 100 * CGFloat(stretch)).offset(x: w * CGFloat(level) / 100)
                     }
                 }.clipShape(Capsule())
                 if let m = marker { Rectangle().fill(Color.primary).frame(width: 2, height: 14).offset(x: w * CGFloat(m) / 100 - 1) }
@@ -361,6 +398,16 @@ struct Choice: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(mac == value ? .isSelected : [])
     }
+}
+
+func cutNoteText(_ n: CutNote) -> Text {
+    let (head, rest): (String, String) = switch n {
+    case .noHelper: ("Below 80% needs the charger helper.", " It is not installed or not answering, so Charge Keeper holds at 80% for now.")
+    case .aldente: ("AlDente is running.", " Charge Keeper does not switch the charger while it runs, so it holds at 80% for now.")
+    case .otherApp: ("Another app has switched the charger off.", " Charge Keeper leaves it alone and holds at 80% for now.")
+    case .lidClosed: ("The lid is closed.", " Switching the charger off could put the Mac to sleep, so Charge Keeper holds at 80% until it opens.")
+    }
+    return Text(head).bold().foregroundColor(.orange) + Text(rest)
 }
 
 struct Note: View {
