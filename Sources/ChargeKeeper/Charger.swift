@@ -23,12 +23,13 @@ let replyCut = UInt8(ascii: "C"), replyOn = UInt8(ascii: "O"), replyBusy = UInt8
 
 // Heat pause, fixed points in °F (John, 2026-10-27): pause above 95, start again at 91 or cooler.
 let heatPauseF = 95.0, heatResumeF = 91.0
-let heatFloor = 50  // at or under this level heat pause lets charging go on: under 80 a pause runs the Mac on its battery
+let heatFloor = 50  // at or under this level heat pause ends: under 80 a pause runs the Mac on its battery
 
 // nil: not paused. Paused: the level it stopped at, only ever moving down, so a small dip is not charged back up while warm.
-// An unreadable temperature ends the pause (never a pause nobody can see the reason for).
+// An unreadable temperature ends the pause (never a pause nobody can see the reason for). At the floor the pause ends, and a
+// new one starts only 5 above it, so a warm battery near 50% is not switched on and off at every percent.
 func heatStep(on: Bool, tempF: Double?, level: Int, pausedAt: Int?) -> Int? {
-    guard on, let t = tempF, pausedAt == nil ? t > heatPauseF : t > heatResumeF else { return nil }
+    guard on, let t = tempF, level > heatFloor, pausedAt == nil ? t > heatPauseF && level > heatFloor + cutBand : t > heatResumeF else { return nil }
     return min(pausedAt ?? level, level)
 }
 
@@ -46,10 +47,11 @@ func nextResting(level: Int, top: Int, bottom: Int?, resting: Bool) -> Bool {
 struct Plan: Equatable { var mac: Int?; var cut: Bool }
 func plan(level: Int, limit: Int, bottom: Int?, resting: Bool, fullOnce: Bool, pausedAt: Int?) -> Plan {
     var r = Plan(mac: fullOnce ? nil : max(limit, macFloor), cut: false)
-    // Resting: the Mac's limit at the bottom (not charging while on the charger); under 80 only the charger switch goes lower.
-    if !fullOnce, resting, let b = bottom { r = Plan(mac: max(b, macFloor), cut: b < macFloor && level <= macFloor) }
+    // Resting: the Mac's limit at the bottom (on the charger the level then stays put); a bottom under 80 needs the charger
+    // switch from the top down, as the Mac's own 80 would never let it lower.
+    if !fullOnce, resting, let b = bottom { r = Plan(mac: max(b, macFloor), cut: b < macFloor) }
     // Heat wins over everything, "Charge to full once" too: stop at the level it paused at.
-    if let p = pausedAt, level > heatFloor { r = Plan(mac: max(min(r.mac ?? 100, p), macFloor), cut: r.cut || level < macFloor) }
+    if let p = pausedAt { r = Plan(mac: max(min(r.mac ?? 100, p), macFloor), cut: r.cut || level < macFloor) }
     return r
 }
 

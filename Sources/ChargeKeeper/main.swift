@@ -140,13 +140,14 @@ func selftest() -> Int32 {
     }
     let on = Plan(mac: 80, cut: false), off = Plan(mac: 80, cut: true)
     expect(run([58, 60, 59, 56, 55, 57, 60], limit: 60) == [on, off, off, off, on, on, off], "under 80: off at the limit, on again 5 lower, unchanged in between")
+    expect(run([88, 70, 61, 60], limit: 60) == [off, off, off, off], "under 80 set while above 80: off straight away, all the way down")
     expect(run([85, 90, 95], limit: 80) == Array(repeating: on, count: 3) && run([70], limit: 90) == [Plan(mac: 90, cut: false)], "80 and up: the Mac's own limit, never the charger")
     expect(run([60, 56, 55, 52, 50, 51], limit: 60, sailing: true, bottom: 50) == [off, off, off, off, on, on], "sailing replaces the 5-point gap under 80")
     // Sailing range, 80 and up: the Mac's limit moves to the bottom at the top, back to the top at the bottom.
     let top = Plan(mac: 90, cut: false), rest = Plan(mac: 85, cut: false)
     expect(run([86, 90, 88, 86, 85, 87, 90], limit: 90, sailing: true, bottom: 85) == [top, rest, rest, rest, top, top, rest], "sailing: rests down, then charges again")
-    expect(run([90, 84, 81, 80, 75, 70, 72], limit: 90, sailing: true, bottom: 70) == [on, on, on, off, off, Plan(mac: 90, cut: false), Plan(mac: 90, cut: false)],
-           "sailing to a bottom under 80: the Mac's 80 first, then the charger switch, then up to the top")
+    expect(run([90, 84, 75, 70, 72], limit: 90, sailing: true, bottom: 70) == [off, off, off, Plan(mac: 90, cut: false), Plan(mac: 90, cut: false)],
+           "sailing to a bottom under 80: the charger switch from the top down, then up to the top")
     expect(run([75, 80, 77, 75, 74], limit: 80, sailing: true, bottom: 75) == [on, off, off, on, on], "mockup range 80/75: runs on battery from 80 down to 75")
     expect(run([95, 100], limit: 80, sailing: true, bottom: 75, fullOnce: true) == [Plan(mac: nil, cut: false), Plan(mac: nil, cut: false)], "charge to full once ignores the range")
     expect(nextResting(level: 100, top: 80, bottom: 75, resting: false), "after charging to full once, the range starts with a rest")
@@ -160,11 +161,12 @@ func selftest() -> Int32 {
     expect(run([84, 86, 86, 86, 86, 86], limit: 95, temps: warm, heat: true) == [Plan(mac: 95, cut: false), Plan(mac: 86, cut: false), Plan(mac: 86, cut: false), Plan(mac: 86, cut: false), Plan(mac: 86, cut: false), Plan(mac: 95, cut: false)],
            "heat at 80 and up: the Mac's limit at the level it paused at, on the charger, back to the limit once cool")
     expect(run([66, 65, 64], limit: 80, temps: [99, 99, 90], heat: true) == [off, off, on], "heat under 80: the charger switch, back on once cool")
-    expect(run([50], limit: 80, temps: [99], heat: true) == [on] && run([51], limit: 80, temps: [99], heat: true) == [off], "heat at 50% or less lets charging go on")
+    expect(run([56, 52, 50, 52, 55, 56], limit: 80, temps: Array(repeating: 99, count: 6), heat: true) == [off, off, on, on, on, off],
+           "heat near 50%: the pause ends at 50 and starts again only above 55 (no switching at every percent)")
     expect(run([90, 92], limit: 80, fullOnce: true, temps: [99, 99], heat: true) == [Plan(mac: 90, cut: false), Plan(mac: 90, cut: false)] && run([70], limit: 80, fullOnce: true, temps: [99], heat: true) == [off],
            "heat during charge to full once")
     expect(run([86, 88], limit: 90, sailing: true, bottom: 85, temps: [99, 99], heat: true) == [Plan(mac: 86, cut: false), Plan(mac: 86, cut: false)], "heat wins over sailing's charging up")
-    expect(run([90, 82, 80], limit: 90, sailing: true, bottom: 70, temps: [99, 99, 99], heat: true) == [Plan(mac: 80, cut: false), on, off], "heat with sailing resting: never above the rest")
+    expect(run([90, 95], limit: 95, sailing: true, bottom: 85, temps: [90, 99], heat: true) == [Plan(mac: 95, cut: false), Plan(mac: 85, cut: false)], "heat with sailing resting: never above the rest")
     expect(run([60, 56, 55], limit: 60, temps: [99, 99, 99], heat: true) == [off, off, off], "heat under 80 keeps the charger off past the 5-point gap")
     expect(clampBottom(75, limit: 80) == 75 && clampBottom(80, limit: 80) == 75 && clampBottom(75, limit: 70) == 65 && clampBottom(10, limit: 80) == 50, "range bottom: at least 5 under the top, pushed down with it")
     expect(bottomRange(50) == 40...45 && bottomRange(55) == 45...50 && bottomRange(80) == 50...75, "range bottom slider always spans a step")

@@ -35,10 +35,11 @@ func notHolding(_ m: Mode) -> Bool { showsChoice(m) || m == .macLimit }
 
 let limitRange = 50...100  // the approved mockup's slider; 80 and up is the Mac's own limit, under 80 the charger switch (Charger.swift)
 
-func clampLimit(_ v: Int) -> Int { min(limitRange.upperBound, max(limitRange.lowerBound, v / 5 * 5)) }
+func clamp5(_ v: Int, _ r: ClosedRange<Int>) -> Int { min(r.upperBound, max(r.lowerBound, v / 5 * 5)) }
+func clampLimit(_ v: Int) -> Int { clamp5(v, limitRange) }
 // The sailing range's bottom: at least 5 under the top; the slider always spans at least one step (40...45 under a top of 50).
 func bottomRange(_ limit: Int) -> ClosedRange<Int> { min(limitRange.lowerBound, limit - 2 * cutBand)...(limit - cutBand) }
-func clampBottom(_ v: Int, limit: Int) -> Int { let r = bottomRange(limit); return min(r.upperBound, max(r.lowerBound, v / 5 * 5)) }
+func clampBottom(_ v: Int, limit: Int) -> Int { clamp5(v, bottomRange(limit)) }
 func degrees(_ f: Double) -> String { "\(Int(f.rounded()))°F" }
 
 func statusText(_ s: Snapshot) -> String {
@@ -181,10 +182,10 @@ final class Keeper: ObservableObject {
         }
         let active = mode == .holding || mode == .fullOnce
         let want = active && b.current != nil && p.cut  // an unreadable level never switches the charger off
-        let need = want || mode == .holding && (limit < macFloor || sailOn && bottom < macFloor)
+        let need = want || mode == .holding && limit < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
         let note = steerCharger(need: need, want: want)
         // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
-        let paused = active && pausedAt != nil && level > heatFloor && (cutNow || b.external == true && level >= macFloor)
+        let paused = active && pausedAt != nil && (cutNow || b.external == true && level >= macFloor)
         let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
                          heatOn: heatOn, sailing: sailOn, bottom: bottom, tempF: b.tempF, paused: paused, resting: resting)
         DispatchQueue.main.async {
@@ -237,8 +238,10 @@ final class Keeper: ObservableObject {
     func panel(open: Bool) { panelOpen = open; if open { bar = anim } }
     func setLimit(_ v: Int) {
         work.async {
-            self.limit = clampLimit(v); UserDefaults.standard.set(self.limit, forKey: "limit")
-            self.bottom = clampBottom(self.bottom, limit: self.limit)  // moving the top down pushes the bottom down too
+            let new = clampLimit(v)
+            if new != self.limit { self.resting = false }  // a new top: charge up to it first (a top under the level rests again at once)
+            self.limit = new; UserDefaults.standard.set(new, forKey: "limit")
+            self.bottom = clampBottom(self.bottom, limit: new)  // moving the top down pushes the bottom down too
             self.step()
         }
     }
