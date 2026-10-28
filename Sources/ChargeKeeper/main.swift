@@ -117,6 +117,8 @@ func selftest() -> Int32 {
     expect(!changedOutside(cur: on85, held: on85, reassert: false), "slider move (still our old level): not a clash")
     expect(changedOutside(cur: LimitState(enabled: true, limit: 90), held: on85, reassert: false), "a different level set outside: clash")
     expect(changedOutside(cur: LimitState(enabled: false, limit: 85), held: on85, reassert: false), "turned off outside: clash")
+    expect(raiseNeedsReset(cur: LimitState(enabled: true, limit: 80), target: 85), "raising a limit that is on (sailing off): off first, or it never charges")
+    expect(!raiseNeedsReset(cur: on85, target: 80) && !raiseNeedsReset(cur: LimitState(enabled: false, limit: 100), target: 85), "lowering, or a limit that is off: no reset")
     expect(!changedOutside(cur: LimitState(enabled: false, limit: 85), held: on85, reassert: true), "turned off just after wake: set back, not a clash")
     expect(shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: false), "login item: installed copy, first time")
     expect(!shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: true), "login item: asked only once")

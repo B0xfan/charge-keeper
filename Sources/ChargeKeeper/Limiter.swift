@@ -12,6 +12,7 @@ let markerURL = FileManager.default.urls(for: .applicationSupportDirectory, in: 
 // A slider move is not that (cur is still our old level); just after a wake a change is ours to set back (sleep may reset it).
 // Called only after `cur == want` was ruled out.
 func changedOutside(cur: LimitState, held: LimitState?, reassert: Bool) -> Bool { !reassert && held != nil && cur != held }
+func raiseNeedsReset(cur: LimitState, target: Int) -> Bool { cur.enabled && target > cur.limit }
 
 final class Limiter {
     private let m: MCL
@@ -55,6 +56,8 @@ final class Limiter {
             if cur == want { held = want; return .ok }
             if changedOutside(cur: cur, held: held, reassert: reassert) { disownLocked(); return .changed }
         }
+        // Raising a limit that is on keeps macOS in "limit reached" (it never charges back up), so switch it off first (John, 2026-10-28).
+        if raiseNeedsReset(cur: cur, target: target) { m.disable() }
         guard m.setLimit(target) else { return fail("macOS refused the limit \(target)%") }
         if m.enabled() != true { m.enable() }  // setting the level may already switch it on
         guard m.state() == want else { return fail("macOS did not keep the limit \(target)%") }
