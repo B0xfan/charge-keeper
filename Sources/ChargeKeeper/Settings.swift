@@ -87,7 +87,7 @@ struct SettingsView: View {
                 }
             }
         }
-        .formStyle(.grouped).frame(width: 460)
+        .formStyle(.grouped).frame(width: 460).frame(minHeight: 640)  // a grouped Form scrolls, so without a height its window opens as a bare title bar
         .sheet(item: $editing) { x in
             ScheduleEditor(draft: x, isNew: !s.schedules.contains { $0.id == x.id },
                            save: { new in change { st in if let i = st.schedules.firstIndex(where: { $0.id == new.id }) { st.schedules[i] = new } else { st.schedules.append(new) } }; editing = nil },
@@ -151,6 +151,6 @@ struct ScheduleEditor: View {
                 .disabled(kind == .once && draft.until <= draft.from)
             }
         }
-        .formStyle(.grouped).frame(width: 360)
+        .formStyle(.grouped).frame(width: 360).frame(minHeight: 308)
     }
 }

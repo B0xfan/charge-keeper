@@ -402,7 +402,7 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         if settingsWindow == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsHost(keeper: keeper)))
             w.title = "Charge Keeper Settings"
-            w.styleMask = [.titled, .closable]
+            w.styleMask = [.titled, .closable, .resizable]
             w.isReleasedWhenClosed = false
             settingsWindow = w
         }
