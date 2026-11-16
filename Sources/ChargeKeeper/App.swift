@@ -136,6 +136,7 @@ final class Keeper: ObservableObject {
     private var skipped: [UUID: Date] = [:]  // "Skip this time": the occurrence (by its end) left out
     private var ledIsDark = false
     private var helperOld = false  // once seen, nothing new is sent: an old helper reads any new byte as "power on" and would undo a cut
+    private var leftOnCheck = false  // work queue only: the last run quit with "Keep my limit"; checked once, at the first step
     private var lastTop = 0  // the limit in force at the last step (a schedule's or the slider's)
     private var settings: Settings {
         didSet {
@@ -164,7 +165,7 @@ final class Keeper: ObservableObject {
                             keepOnQuit: d.bool(forKey: "keepOnQuit"), led: LedMode(rawValue: d.integer(forKey: "magsafeLight")) ?? .normal,
                             calibratedAt: d.object(forKey: "calibratedAt") as? Date)
         // Quit with "Keep my limit" left the Mac's limit on: take it back over instead of asking as if it were someone else's.
-        if d.bool(forKey: "leftOn") { adopt = true; d.removeObject(forKey: "leftOn") }
+        leftOnCheck = d.bool(forKey: "leftOn"); d.removeObject(forKey: "leftOn")
         limiter = MCL().map(Limiter.init)
         let nc = NSWorkspace.shared.notificationCenter
         for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false)] {
@@ -212,6 +213,8 @@ final class Keeper: ObservableObject {
         var mode = Mode.unsupported
         var mac: LimitState? = nil
         if let l = limiter {
+            // Take back over only the limit we left on: one John has changed since then is his, and is asked about as usual.
+            if leftOnCheck { leftOnCheck = false; if l.current() == LimitState(enabled: true, limit: limit) { adopt = true } }
             if useMac {
                 // Normally a no-op (the choice is offered only while we hold nothing); covers a tick that took over just before the click.
                 mode = l.release() ? .macLimit : .failed("Could not put charging back to normal")
@@ -236,15 +239,17 @@ final class Keeper: ObservableObject {
             if notHolding(mode) { mac = l.current() }
         }
         let active = mode == .holding || mode == .fullOnce
-        if !active { runDown = nil; calib = 0 }  // both need Charge Keeper holding; started only from the holding panel
+        // Both need Charge Keeper holding. A failed step keeps them (it may be a moment's hiccup; no cut is made meanwhile).
+        if case .failed = mode {} else if !active { runDown = nil; calib = 0 }
         let want = active && b.current != nil && p.cut  // an unreadable level never switches the charger off
         let need = want || mode == .holding && top < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
         let note = steerCharger(need: need, want: want, deep: calib == 2)
+        if note == .oldHelper { calib = 0 }  // an old helper cannot run the battery down that far: end the cycle, the note says why
         steerLight(ledDark(settings.led, plugged: b.external == true, charging: b.charging == true))
         // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
         let paused = active && pausedAt != nil && (cutNow || b.external == true && level >= macFloor)
         // Only above our level on the charger: once the battery is back down, the flag alone never changes the text.
-        let calibrating = mode == .holding && !cutNow && b.external == true && level > max(limit, macFloor) && macChargingToFull()
+        let calibrating = mode == .holding && !cutNow && b.external == true && level > max(top, macFloor) && macChargingToFull()
         let keep = settings.keepOnQuit && mode == .holding && sched == nil && p.mac == limit && limit >= macFloor && !p.cut
         let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: top, mode: mode, mac: mac, cut: cutNow, cutNote: note,
                          heatOn: heatOn, sailing: sailOn, bottom: clampBottom(bottom, limit: top), tempF: b.tempF, paused: paused, resting: resting, calibrating: calibrating,
@@ -321,7 +326,7 @@ final class Keeper: ObservableObject {
     func setBottom(_ v: Int) { work.async { self.bottom = clampBottom(v, limit: self.limit); self.step() } }
     func setHeat(_ on: Bool) { work.async { self.heatOn = on; self.step() } }  // off ends a pause straight away
     func setSailing(_ on: Bool) { work.async { self.sailOn = on; self.step() } }
-    func chargeToFullOnce() { work.async { self.fullOnce = true; self.step() } }
+    func chargeToFullOnce() { work.async { self.runDown = nil; self.calib = 0; self.fullOnce = true; self.step() } }
     func backToLimit() { work.async { self.fullOnce = false; self.step() } }
     // Panel 4's choice. Charge Keeper: take over the limit that is on now. The Mac's own: Charge Keeper only shows the level, also after a restart.
     func choose(macLimit: Bool) {
@@ -332,7 +337,7 @@ final class Keeper: ObservableObject {
     }
     func quit() { NSApplication.shared.terminate(nil) }  // ends in exit(), whose handler puts charging back first (or, with "Keep my limit", leaves it)
     // Mockup v3
-    func startRunDown() { work.async { self.runDown = self.lastTop; self.step() } }  // the limit in force, so a link never cuts a schedule's charge short
+    func startRunDown() { work.async { self.fullOnce = false; self.calib = 0; self.runDown = self.lastTop; self.step() } }  // the limit in force, so a link never cuts a schedule's charge short
     func stopRunDown() { work.async { self.runDown = nil; self.step() } }
     func startCalibration() { work.async { self.runDown = nil; self.fullOnce = false; self.calib = 1; self.step() } }
     func cancelCalibration() { work.async { self.calib = 0; self.step() } }
@@ -344,6 +349,7 @@ final class Keeper: ObservableObject {
             if r != nil && r != replyDone && r != replyErr { self.helperOld = true }
             if !self.cutNow { self.charger.disconnect() }
             self.step()
+            self.work.asyncAfter(deadline: .now() + 1.5) { self.step() }  // macOS reports the new low power state a moment later
         }
     }
     func update(_ change: @escaping (inout Settings) -> Void) { work.async { change(&self.settings); self.step() } }

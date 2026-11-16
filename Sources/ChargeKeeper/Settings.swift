@@ -145,7 +145,6 @@ struct ScheduleEditor: View {
                 Button(isNew ? "Add" : "Save") {
                     var d = draft
                     if d.name.trimmingCharacters(in: .whitespaces).isEmpty { d.name = "Schedule" }
-                    d.on = true
                     save(d)
                 }
                 .keyboardShortcut(.defaultAction)

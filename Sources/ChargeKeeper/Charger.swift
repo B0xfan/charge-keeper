@@ -185,8 +185,11 @@ func setLowPower(_ on: Bool) -> Bool {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
     p.arguments = ["-a", "lowpowermode", on ? "1" : "0"]
+    let done = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in done.signal() }
     guard (try? p.run()) != nil else { return false }
-    p.waitUntilExit()
+    // It runs on the helper's one queue, which also owns every power-back-on path: never wait long.
+    guard done.wait(timeout: .now() + 5) == .success else { p.terminate(); return false }
     return p.terminationStatus == 0
 }
 
