@@ -328,10 +328,7 @@ final class Keeper: ObservableObject {
             self.aside = false; self.adopt = !macLimit; self.step()
         }
     }
-    func quit() {
-        if keepLimitOnExit { UserDefaults.standard.set(true, forKey: "leftOn") }
-        NSApplication.shared.terminate(nil)  // ends in exit(), whose handler puts charging back first (or, with "Keep my limit", leaves it)
-    }
+    func quit() { NSApplication.shared.terminate(nil) }  // ends in exit(), whose handler puts charging back first (or, with "Keep my limit", leaves it)
     // Mockup v3
     func startRunDown() { work.async { self.runDown = self.limit; self.step() } }
     func stopRunDown() { work.async { self.runDown = nil; self.step() } }

@@ -135,7 +135,11 @@ var signalSources: [DispatchSourceSignal] = []
 
 func installExitSafety(_ l: Limiter) {
     activeLimiter = l
-    atexit { if keepLimitOnExit && Thread.isMainThread { activeLimiter?.leaveOn() } else { _ = activeLimiter?.release(final: true) } }  // covers the Quit button too: terminate() ends in exit()
+    atexit {
+        // Quit, log out or restart with "Keep my limit": leave it on, and tell the next start to take it back over.
+        if keepLimitOnExit && Thread.isMainThread { activeLimiter?.leaveOn(); UserDefaults.standard.set(true, forKey: "leftOn"); UserDefaults.standard.synchronize() }
+        else { _ = activeLimiter?.release(final: true) }
+    }  // covers the Quit button too: terminate() ends in exit()
     for sig in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
         signal(sig, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.global())
