@@ -13,9 +13,10 @@ if pgrep -f "$APP_PROC" >/dev/null; then
     for _ in {1..20}; do pgrep -f "$APP_PROC" >/dev/null || break; sleep 1; done
     ! pgrep -f "$APP_PROC" >/dev/null || { echo "The old copy did not quit."; exit 1; }
 fi
-rm -rf "$DST.new"
-ditto "$SRC" "$DST.new"  # copy first: a failed copy must not leave /Applications without the app
+STAGE="/Applications/.chargekeeper-install"  # hidden folder: never a temporary name like "App.app.new", which macOS can keep showing
+rm -rf "$STAGE"; mkdir "$STAGE"
+ditto "$SRC" "$STAGE/$(basename "$DST")"  # copy first: a failed copy must not leave /Applications without the app
 rm -rf "$DST"
-mv "$DST.new" "$DST"
+mv "$STAGE/$(basename "$DST")" "$DST"; rmdir "$STAGE"
 open "$DST"
 echo "Installed: $DST"
