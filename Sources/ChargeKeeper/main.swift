@@ -109,6 +109,8 @@ func selftest() -> Int32 {
     expect(statusText(s) == "macOS calibrating" && isCharging(s), "macOS charging to full past the limit")
     s.charging = false; s.level = 100
     expect(statusText(s) == "macOS calibrating" && !isCharging(s), "calibration done, still above the limit")
+    s.heatOn = true; s.paused = true
+    expect(statusText(s) == "macOS calibrating", "calibrating wins over a heat pause (macOS has set the limit aside)")
     s.mode = .foreign
     expect(statusText(s) == "Not holding yet", "the Mac's own limit is on")
     s.mode = .steppedAside

@@ -52,8 +52,8 @@ func statusText(_ s: Snapshot) -> String {
     case .macLimit: return s.mac.map { $0.enabled ? "Mac's limit: \($0.limit)%" : "No limit on" } ?? "Mac's limit"
     case .failed: return "Could not set the limit"
     case .holding, .fullOnce:
+        if s.calibrating { return "macOS calibrating" }  // before the heat pause: at 80 and up it works through the Mac's limit, which macOS has set aside
         if s.paused { return "Paused, battery warm" }
-        if s.calibrating { return "macOS calibrating" }
         if s.mode == .holding && s.sailing && s.resting && s.level != s.limit { return "Resting down to \(s.bottom)%" }
         if s.cut { return s.level > s.limit ? "Coming down to \(s.limit)%" : "Holding at \(s.limit)%" }
         if !s.plugged { return "On battery" }
@@ -190,9 +190,8 @@ final class Keeper: ObservableObject {
         let paused = active && pausedAt != nil && (cutNow || b.external == true && level >= macFloor)
         // Only above our level on the charger: once the battery is back down, the flag alone never changes the text.
         let calibrating = mode == .holding && !cutNow && b.external == true && level > max(limit, macFloor) && macChargingToFull()
-        var s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
-                         heatOn: heatOn, sailing: sailOn, bottom: bottom, tempF: b.tempF, paused: paused, resting: resting)
-        s.calibrating = calibrating
+        let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
+                         heatOn: heatOn, sailing: sailOn, bottom: bottom, tempF: b.tempF, paused: paused, resting: resting, calibrating: calibrating)
         DispatchQueue.main.async {
             self.snap = s
             let before = self.anim
