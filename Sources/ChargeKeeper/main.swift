@@ -105,6 +105,10 @@ func selftest() -> Int32 {
     expect(statusText(s) == "On battery", "on battery")
     s = hold; s.mode = .fullOnce; s.level = 80; s.charging = true
     expect(statusText(s) == "Charging to full, once", "charge to full once")
+    s = hold; s.limit = 85; s.level = 93; s.charging = true; s.calibrating = true
+    expect(statusText(s) == "macOS calibrating" && isCharging(s), "macOS charging to full past the limit")
+    s.charging = false; s.level = 100
+    expect(statusText(s) == "macOS calibrating" && !isCharging(s), "calibration done, still above the limit")
     s.mode = .foreign
     expect(statusText(s) == "Not holding yet", "the Mac's own limit is on")
     s.mode = .steppedAside

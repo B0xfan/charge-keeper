@@ -30,6 +30,7 @@ private struct Stage: View {
         ("normal", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding)),
         ("charging", Snapshot(level: 62, plugged: true, charging: true, limit: 80, mode: .holding)),
         ("onbattery", Snapshot(level: 54, plugged: false, charging: false, limit: 80, mode: .holding)),
+        ("calibrating", Snapshot(level: 93, plugged: true, charging: true, limit: 85, mode: .holding, calibrating: true)),
         ("full-once", Snapshot(level: 80, plugged: true, charging: true, limit: 80, mode: .fullOnce)),
         ("mac-limit-on", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .foreign)),
         ("stepped-aside", Snapshot(level: 80, plugged: true, charging: false, limit: 85, mode: .steppedAside, mac: LimitState(enabled: true, limit: 90))),

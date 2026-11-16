@@ -21,6 +21,7 @@ struct Snapshot: Equatable {
     var tempF: Double? = nil
     var paused = false  // heat pause in effect: charging stopped because the battery is warm
     var resting = false  // the top was reached, waiting for the level to come down to the bottom
+    var calibrating = false  // macOS has set our limit aside for a while to charge to full and re-measure the battery
 }
 
 enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed }
@@ -52,6 +53,7 @@ func statusText(_ s: Snapshot) -> String {
     case .failed: return "Could not set the limit"
     case .holding, .fullOnce:
         if s.paused { return "Paused, battery warm" }
+        if s.calibrating { return "macOS calibrating" }
         if s.mode == .holding && s.sailing && s.resting && s.level != s.limit { return "Resting down to \(s.bottom)%" }
         if s.cut { return s.level > s.limit ? "Coming down to \(s.limit)%" : "Holding at \(s.limit)%" }
         if !s.plugged { return "On battery" }
@@ -63,7 +65,7 @@ func statusText(_ s: Snapshot) -> String {
 
 // Actually charging (same test as the status line): this is what drives the green movement.
 func isCharging(_ s: Snapshot) -> Bool {
-    s.plugged && s.charging && !s.cut && (s.mode == .fullOnce || (s.mode == .holding && s.level < holdLevel(s)))
+    s.plugged && s.charging && !s.cut && (s.mode == .fullOnce || (s.mode == .holding && (s.level < holdLevel(s) || s.calibrating)))
 }
 
 // The animation is one number, 0...1 (see sweepAmount): the icon's green and the panel bar's stretch both follow it.
@@ -186,8 +188,11 @@ final class Keeper: ObservableObject {
         let note = steerCharger(need: need, want: want)
         // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
         let paused = active && pausedAt != nil && (cutNow || b.external == true && level >= macFloor)
-        let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
+        // Only above our level on the charger: once the battery is back down, the flag alone never changes the text.
+        let calibrating = mode == .holding && !cutNow && b.external == true && level > max(limit, macFloor) && macChargingToFull()
+        var s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
                          heatOn: heatOn, sailing: sailOn, bottom: bottom, tempF: b.tempF, paused: paused, resting: resting)
+        s.calibrating = calibrating
         DispatchQueue.main.async {
             self.snap = s
             let before = self.anim

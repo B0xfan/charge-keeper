@@ -2,6 +2,7 @@
 // proven in Phase 1 to work as a normal user. Original code. No charging-chip key is ever written.
 import Foundation
 import IOKit
+import notify
 
 // MARK: - PowerUI client (private framework, reached by method address because it has no public header)
 
@@ -91,6 +92,15 @@ func battery() -> Battery {
     defer { IOObjectRelease(svc) }
     func p(_ k: String) -> NSNumber? { IORegistryEntryCreateCFProperty(svc, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber }
     return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: p("CurrentCapacity")?.intValue, tempF: fahrenheit(centiC: batteryTempCentiC(svc)))  // CurrentCapacity is a percent on Apple silicon (MaxCapacity reads 100)
+}
+
+// macOS sets this flag while it charges past the limit to full on its own, about every few weeks, to re-measure the battery
+// (powerd log 2026-11-16: "Last full charge date was 21.1 days ago, try and charge to full", then "SOC limit policy suspend").
+func macChargingToFull() -> Bool {
+    var token: Int32 = 0, state: UInt64 = 0  // 0 = NOTIFY_STATUS_OK (the macro does not reach Swift)
+    guard notify_register_check("com.apple.system.powersources.chargingtofulloverride", &token) == 0 else { return false }
+    defer { notify_cancel(token) }
+    return notify_get_state(token, &state) == 0 && state != 0
 }
 
 // MARK: - a process that outlives us
