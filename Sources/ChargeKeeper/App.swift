@@ -135,7 +135,8 @@ final class Keeper: ObservableObject {
     private var calib = 0
     private var skipped: [UUID: Date] = [:]  // "Skip this time": the occurrence (by its end) left out
     private var ledIsDark = false
-    private var helperOld = false
+    private var helperOld = false  // once seen, nothing new is sent: an old helper reads any new byte as "power on" and would undo a cut
+    private var lastTop = 0  // the limit in force at the last step (a schedule's or the slider's)
     private var settings: Settings {
         didSet {
             let d = UserDefaults.standard
@@ -196,6 +197,7 @@ final class Keeper: ObservableObject {
         skipped = skipped.filter { $0.value > now }
         let sched = activeSchedule(settings.schedules, now: now, skipped: skipped)
         let top = sched.map { clampLimit($0.0.limit) } ?? limit
+        if top != lastTop { resting = false; lastTop = top }  // a new top (schedule start or end): charge up to it first, as setLimit does
         if calib > 0 { calib = nextCalib(calib, level: b.current) ?? 0; if calib == 0 { settings.calibratedAt = now } }
         // Run down ends at its level, when unplugged, or when the lid closes (cutting power could put the Mac to sleep).
         if let t = runDown, b.current.map({ $0 <= t }) ?? false || b.external != true || lidClosed() { runDown = nil }
@@ -266,7 +268,7 @@ final class Keeper: ObservableObject {
         let lid = need && lidClosed()  // cutting power can put a Mac with an outside screen to sleep
         let w = want && !aldente && !lid
         let r = charger.send(byte: w ? (deep ? cmdDeep : cmdCut) : cmdOn)
-        if w && deep && r == replyOn { helperOld = true; charger.disconnect(); return .oldHelper }  // an old helper reads "d" as power on
+        if w && deep && r == replyOn { helperOld = true; cutNow = false; charger.disconnect(); return .oldHelper }  // an old helper reads "d" as power on
         cutNow = r == replyCut
         if !need || !w && r == replyOn { charger.disconnect() }  // nothing of ours is off: no need to keep the line open
         if aldente { return .aldente }
@@ -278,7 +280,7 @@ final class Keeper: ObservableObject {
 
     // Work queue. The MagSafe light: dark asked again every step while wanted (a restarted helper has given it back), normal once.
     private func steerLight(_ dark: Bool) {
-        guard dark || ledIsDark else { return }
+        guard !helperOld, dark || ledIsDark else { return }
         let r = ledLine.send(byte: dark ? cmdLedDark : cmdLedNormal)
         if r != nil && r != replyDone && r != replyErr { helperOld = true }
         ledIsDark = dark && r == replyDone
@@ -330,13 +332,14 @@ final class Keeper: ObservableObject {
     }
     func quit() { NSApplication.shared.terminate(nil) }  // ends in exit(), whose handler puts charging back first (or, with "Keep my limit", leaves it)
     // Mockup v3
-    func startRunDown() { work.async { self.runDown = self.limit; self.step() } }
+    func startRunDown() { work.async { self.runDown = self.lastTop; self.step() } }  // the limit in force, so a link never cuts a schedule's charge short
     func stopRunDown() { work.async { self.runDown = nil; self.step() } }
     func startCalibration() { work.async { self.runDown = nil; self.fullOnce = false; self.calib = 1; self.step() } }
     func cancelCalibration() { work.async { self.calib = 0; self.step() } }
     func skipSchedule() { work.async { if let (s, end) = activeSchedule(self.settings.schedules, now: Date(), skipped: self.skipped) { self.skipped[s.id] = end }; self.step() } }
     func setLowPower(_ on: Bool) {
         work.async {
+            guard !self.helperOld else { return self.step() }
             let r = self.charger.send(byte: on ? cmdLowOn : cmdLowOff)
             if r != nil && r != replyDone && r != replyErr { self.helperOld = true }
             if !self.cutNow { self.charger.disconnect() }
