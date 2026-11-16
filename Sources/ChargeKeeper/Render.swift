@@ -51,6 +51,13 @@ private struct Stage: View {
         ("v2-6-sailing-bottom", Snapshot(level: 74, plugged: true, charging: true, limit: 80, mode: .holding, sailing: true, bottom: 75)),
         ("v2-full-once-heat", Snapshot(level: 90, plugged: true, charging: false, limit: 80, mode: .fullOnce, heatOn: true, sailing: true, bottom: 75, tempF: 99, paused: true)),
         ("below80-aldente", Snapshot(level: 80, plugged: true, charging: false, limit: 60, mode: .holding, cutNote: .aldente)),
+        // Mockup v3, panels 1 to 4.
+        ("v3-1-above-limit", Snapshot(level: 94, plugged: true, charging: false, limit: 80, mode: .holding)),
+        ("v3-2-running-down", Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)),
+        ("v3-3-calibrating", Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)),
+        ("v3-4-schedule", Snapshot(level: 93, plugged: true, charging: true, limit: 100, mode: .holding, scheduled: Scheduled(name: "Trip", until: Date().addingTimeInterval(30 * 3600), back: 80))),
+        ("v3-low-power-on-keeps", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding, lowPower: true, keepsOnQuit: true)),
+        ("v3-old-helper", Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cutNote: .oldHelper, calib: 2, helperOld: true)),
     ]
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     var ok = true
@@ -58,6 +65,15 @@ private struct Stage: View {
         for dark in [false, true] {
             ok = save(Stage(snap: snap, dark: dark), dark: dark, scale: 2, to: "\(dir)/panel-\(name)-\(dark ? "dark" : "light").png") && ok
         }
+    }
+    // Mockup v3 panels 5 and 6: the Settings window and the schedule sheet.
+    let start = Calendar.current.date(bySettingHour: 7, minute: 0, second: 0, of: Date().addingTimeInterval(86_400))!
+    let trip = Schedule(name: "Trip", limit: 100, from: start, until: start.addingTimeInterval(35 * 3600))
+    let wk = Schedule(name: "Weekdays", limit: 90, on: false, days: weekdays, from: start.addingTimeInterval(-3600), until: start.addingTimeInterval(3600))
+    for dark in [false, true] {
+        let tone = dark ? "dark" : "light"
+        ok = save(SettingsView(s: Settings(schedules: [trip, wk])).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(tone).png") && ok
+        ok = save(ScheduleEditor(draft: trip, isNew: true, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-\(tone).png") && ok
     }
     // The icon alone, drawn 8 times larger (scale 2 = real size on a retina screen), in the colour the menu bar would give it (black on light, white on dark).
     for dark in [false, true] {

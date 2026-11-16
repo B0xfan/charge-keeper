@@ -18,8 +18,14 @@ let helperSocket = "/var/run/com.johnhesch.keeper.helper.sock"
 let helperMarker = "/var/db/com.johnhesch.keeper.helper.cut"  // exists exactly while a cut of ours may be on; survives a restart
 let powerOn: UInt8 = 0x00, powerOff: UInt8 = 0x08
 let cmdCut = UInt8(ascii: "c"), cmdOn = UInt8(ascii: "o")
-// Replies: we switched it off / power is on / off by another app, left alone / the switch failed.
-let replyCut = UInt8(ascii: "C"), replyOn = UInt8(ascii: "O"), replyBusy = UInt8(ascii: "B"), replyErr = UInt8(ascii: "E")
+// A cut for the calibration cycle's run down: the battery floor is deepFloor instead of 40 (calibFloor stops it before that).
+let cmdDeep = UInt8(ascii: "d"), deepFloor = 10
+// Mockup v3 extras: low power mode on/off, MagSafe light dark/normal. A helper older than these treats any unknown byte as
+// "power on" and answers O or B, never replyDone, which is how the app tells it needs the helper updated.
+let cmdLowOn = UInt8(ascii: "L"), cmdLowOff = UInt8(ascii: "l"), cmdLedDark = UInt8(ascii: "x"), cmdLedNormal = UInt8(ascii: "y")
+// Replies: we switched it off / power is on / off by another app, left alone / the switch failed / an extra was done.
+let replyCut = UInt8(ascii: "C"), replyOn = UInt8(ascii: "O"), replyBusy = UInt8(ascii: "B"), replyErr = UInt8(ascii: "E"), replyDone = UInt8(ascii: "Y")
+let ledSystem: UInt8 = 0x00, ledOff: UInt8 = 0x01  // the SMC key ACLC (MagSafe light): 0 = macOS decides, 1 = off (as batt uses it)
 
 // Heat pause, fixed points in °F (John, 2026-10-27): pause above 95, start again at 91 or cooler.
 let heatPauseF = 95.0, heatResumeF = 91.0
@@ -69,10 +75,12 @@ func aldenteRunning() -> Bool { NSWorkspace.shared.runningApplications.contains 
 
 protocol ChargerSwitch: AnyObject { func read() -> UInt8?; func write(_ v: UInt8) -> Bool }
 
-// The SMC's CHIE key. Request layout: key@0, dataSize@28, result@40, command@42, bytes@48 (5 read, 6 write, 9 key info).
+// One 1-byte SMC key (CHIE: the charger switch, ACLC: the MagSafe light). Request layout: key@0, dataSize@28, result@40, command@42, bytes@48 (5 read, 6 write, 9 key info).
 final class SMCSwitch: ChargerSwitch {
     private var conn: io_connect_t = 0
-    init?() {
+    private let key: String
+    init?(key: String = "CHIE") {
+        self.key = key
         let svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleSMC"))
         guard svc != 0 else { return nil }
         defer { IOObjectRelease(svc) }
@@ -83,7 +91,7 @@ final class SMCSwitch: ChargerSwitch {
     deinit { IOServiceClose(conn) }
     private func call(_ cmd: UInt8, _ value: UInt8? = nil) -> [UInt8]? {
         var b = [UInt8](repeating: 0, count: 80)
-        for (i, c) in "CHIE".utf8.enumerated() { b[3 - i] = c }  // the key as a little-endian 32-bit number
+        for (i, c) in key.utf8.enumerated() { b[3 - i] = c }  // the key as a little-endian 32-bit number
         b[28] = 1; b[42] = cmd
         if let value { b[48] = value }
         var out = [UInt8](repeating: 0, count: 80), size = 80
@@ -99,6 +107,7 @@ final class SMCSwitch: ChargerSwitch {
 final class ChargerGuard {
     let sw: ChargerSwitch, marker: String, lease: TimeInterval, floor: Int
     private(set) var ownCut = false
+    private var deep = false  // the cut was asked with cmdDeep: the floor is deepFloor
     private var owner: Int32 = -1          // the connection that asked for the cut; its closing switches power back on
     private var renewed: TimeInterval = 0  // when the owner last checked in
     init(_ sw: ChargerSwitch, marker: String, lease: TimeInterval = 150, floor: Int = 40) {
@@ -108,8 +117,8 @@ final class ChargerGuard {
     private var markerExists: Bool { access(marker, F_OK) == 0 }
 
     func command(_ c: UInt8, fd: Int32, now: TimeInterval) -> UInt8 {
-        guard c == cmdCut else { return !restore() ? replyErr : sw.read() == powerOff ? replyBusy : replyOn }
-        owner = fd; renewed = now
+        guard c == cmdCut || c == cmdDeep else { return !restore() ? replyErr : sw.read() == powerOff ? replyBusy : replyOn }
+        owner = fd; renewed = now; deep = c == cmdDeep
         if !ownCut && markerExists { ownCut = true }  // a power-on still owed: the cut is ours, so it is simply kept
         if !ownCut {
             guard let v = sw.read() else { return replyErr }
@@ -134,17 +143,51 @@ final class ChargerGuard {
     // Every few seconds. Level nil (unreadable) counts as under the floor.
     func tick(now: TimeInterval, level: Int?) {
         if !ownCut && !markerExists { return }
-        if !ownCut || now - renewed > lease || (level ?? 0) <= floor { restore() }  // !ownCut with a marker: a power-on still owed
+        if !ownCut || now - renewed > lease || (level ?? 0) <= (deep ? deepFloor : floor) { restore() }  // !ownCut with a marker: a power-on still owed
     }
 
     // Power back on, if the cut is ours. Checked by reading. On failure the marker stays, so the next tick tries again.
     @discardableResult func restore() -> Bool {
         guard ownCut || markerExists else { return true }  // nothing of ours: never touch another app's setting
-        ownCut = false
+        ownCut = false; deep = false
         guard sw.write(powerOn), sw.read() == powerOn else { return false }
         unlink(marker)
         return true
     }
+}
+
+// Low power mode and the MagSafe light, for the app (mockup v3). The light goes back to normal when the connection that
+// darkened it closes (quit, crash, kill) and when the helper stops. shortcut: a helper that dies outright leaves the light
+// dark until the app asks again or the Mac restarts; it is only a light, so no marker file like the cut's.
+final class Extras {
+    let led: ChargerSwitch?
+    let lowPower: (Bool) -> Bool
+    private var ledOwner: Int32 = -1
+    init(led: ChargerSwitch?, lowPower: @escaping (Bool) -> Bool) { self.led = led; self.lowPower = lowPower }
+    // nil: not an extra (the charger switch's command).
+    func command(_ c: UInt8, fd: Int32) -> UInt8? {
+        switch c {
+        case cmdLowOn, cmdLowOff: return lowPower(c == cmdLowOn) ? replyDone : replyErr
+        case cmdLedDark, cmdLedNormal:
+            let v = c == cmdLedDark ? ledOff : ledSystem
+            guard let led, led.read() == v || led.write(v) else { return replyErr }
+            ledOwner = c == cmdLedDark ? fd : -1
+            return replyDone
+        default: return nil
+        }
+    }
+    func closed(_ fd: Int32) { if fd == ledOwner { reset() } }
+    func reset() { if ledOwner >= 0 { ledOwner = -1; _ = led?.write(ledSystem) } }
+}
+
+// pmset is the Mac's own switch for low power mode; it needs root, which the helper has.
+func setLowPower(_ on: Bool) -> Bool {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+    p.arguments = ["-a", "lowpowermode", on ? "1" : "0"]
+    guard (try? p.run()) != nil else { return false }
+    p.waitUntilExit()
+    return p.terminationStatus == 0
 }
 
 // MARK: - the helper process
@@ -164,10 +207,10 @@ private func noSigpipeCloexec(_ fd: Int32) {
 
 // Listens on `path`; only `uid` (John) and root may talk to it. One serial queue owns the guard.
 final class HelperServer {
-    let g: ChargerGuard, q: DispatchQueue, uid: uid_t
+    let g: ChargerGuard, q: DispatchQueue, uid: uid_t, extras: Extras
     private var listener: DispatchSourceRead?
     private var conns: [Int32: DispatchSourceRead] = [:]  // queue only
-    init(_ g: ChargerGuard, queue: DispatchQueue, uid: uid_t) { self.g = g; q = queue; self.uid = uid }
+    init(_ g: ChargerGuard, queue: DispatchQueue, uid: uid_t, extras: Extras = Extras(led: nil, lowPower: { _ in false })) { self.g = g; q = queue; self.uid = uid; self.extras = extras }
 
     func start(path: String) -> Bool {
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -197,11 +240,11 @@ final class HelperServer {
             let n = read(c, &buf, buf.count)
             guard n > 0 else { self.conns[c]?.cancel(); return }  // closed: the app quit, crashed or was killed
             for b in buf[0..<n] {
-                var r = self.g.command(b, fd: c, now: ProcessInfo.processInfo.systemUptime)
+                var r = self.extras.command(b, fd: c) ?? self.g.command(b, fd: c, now: ProcessInfo.processInfo.systemUptime)
                 _ = write(c, &r, 1)
             }
         }
-        src.setCancelHandler { [weak self] in self?.g.closed(c); self?.conns[c] = nil; close(c) }  // before close(): the fd number may be reused once closed
+        src.setCancelHandler { [weak self] in self?.g.closed(c); self?.extras.closed(c); self?.conns[c] = nil; close(c) }  // before close(): the fd number may be reused once closed
         conns[c] = src
         src.resume()
     }
@@ -230,17 +273,20 @@ final class FileSwitch: ChargerSwitch {
 func runHelper(_ args: [String]) -> Never {
     let fake = args[1] == "--helper-fake"
     guard args.count == 3 else { exit(2) }
-    let sw: ChargerSwitch, sock: String, marker: String, uid: uid_t
+    let sw: ChargerSwitch, sock: String, marker: String, uid: uid_t, extras: Extras
     if fake {
-        sw = FileSwitch(args[2] + "/switch"); sock = args[2] + "/helper.sock"; marker = args[2] + "/cut"; uid = getuid()
+        let dir = args[2]
+        sw = FileSwitch(dir + "/switch"); sock = dir + "/helper.sock"; marker = dir + "/cut"; uid = getuid()
+        extras = Extras(led: FileSwitch(dir + "/led"), lowPower: { on in (try? Data(on ? "1".utf8 : "0".utf8).write(to: URL(fileURLWithPath: dir + "/lowpower"))) != nil })
     } else {
         guard let u = uid_t(args[2]), let s = SMCSwitch() else { exit(1) }  // launchd starts it again
         sw = s; sock = helperSocket; marker = helperMarker; uid = u
+        extras = Extras(led: SMCSwitch(key: "ACLC"), lowPower: setLowPower)  // no ACLC key (no MagSafe): the light answers an error
     }
     signal(SIGPIPE, SIG_IGN)
     let q = DispatchQueue(label: "keeper.helper")
     let g = q.sync { ChargerGuard(sw, marker: marker) }
-    let server = HelperServer(g, queue: q, uid: uid)
+    let server = HelperServer(g, queue: q, uid: uid, extras: extras)
     guard q.sync(execute: { server.start(path: sock) }) else { exit(1) }
 
     // Before sleep: power back on (nothing watches while the Mac sleeps). Without this hook it must not run at all.
@@ -258,7 +304,7 @@ func runHelper(_ args: [String]) -> Never {
     for sig in [SIGTERM, SIGINT, SIGHUP, SIGQUIT] {  // launchd stops daemons with SIGTERM at shutdown and on removal
         signal(sig, SIG_IGN)
         let s = DispatchSource.makeSignalSource(signal: sig, queue: q)
-        s.setEventHandler { g.restore(); exit(0) }
+        s.setEventHandler { g.restore(); extras.reset(); exit(0) }
         s.resume()
         signalSources.append(s)
     }
@@ -289,11 +335,12 @@ final class ChargerClient {
     private var fd: Int32 = -1
     init(path: String) { self.path = path }
     // nil: no helper (not installed, not running or not answering).
-    func send(_ cut: Bool) -> UInt8? {
+    func send(_ cut: Bool) -> UInt8? { send(byte: cut ? cmdCut : cmdOn) }
+    func send(byte: UInt8) -> UInt8? {
         for _ in 0..<2 {  // a connection to a helper that has since restarted fails once, then a fresh one works
             if fd < 0 { fd = connectHelper() }
             guard fd >= 0 else { return nil }
-            var b = cut ? cmdCut : cmdOn
+            var b = byte
             if write(fd, &b, 1) == 1, read(fd, &b, 1) == 1 { return b }
             close(fd); fd = -1  // also on a slow reply: closing makes the helper put power back, and no late reply is misread later
         }

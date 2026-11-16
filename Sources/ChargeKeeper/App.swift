@@ -22,9 +22,26 @@ struct Snapshot: Equatable {
     var paused = false  // heat pause in effect: charging stopped because the battery is warm
     var resting = false  // the top was reached, waiting for the level to come down to the bottom
     var calibrating = false  // macOS has set our limit aside for a while to charge to full and re-measure the battery
+    // Mockup v3
+    var runDown: Int? = nil  // running on battery down to this level, charger plugged in
+    var calib = 0  // Charge Keeper's own calibration cycle: its step 1...3, 0 = not running
+    var scheduled: Scheduled? = nil  // a schedule sets the limit now (limit above is then the schedule's)
+    var lowPower = false
+    var keepsOnQuit = false  // quitting now leaves the limit on ("Keep my limit")
+    var helperOld = false  // the installed helper predates low power, the MagSafe light and the deep run down
+    var settings = Settings()
 }
 
-enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed }
+struct Scheduled: Equatable { var name: String; var until: Date; var back: Int }
+// What the Settings window shows and changes; the Keeper owns them on its work queue.
+struct Settings: Equatable {
+    var schedules: [Schedule] = []
+    var keepOnQuit = false
+    var led = LedMode.normal
+    var calibratedAt: Date? = nil
+}
+
+enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed, oldHelper }
 
 // The level Charge Keeper really holds: under 80 without the charger switch, the Mac's own limit stops at 80.
 func holdLevel(_ s: Snapshot) -> Int { s.cutNote == nil ? s.limit : max(s.limit, macFloor) }
@@ -52,6 +69,8 @@ func statusText(_ s: Snapshot) -> String {
     case .macLimit: return s.mac.map { $0.enabled ? "Mac's limit: \($0.limit)%" : "No limit on" } ?? "Mac's limit"
     case .failed: return "Could not set the limit"
     case .holding, .fullOnce:
+        if s.calib > 0 { return "Calibrating, step \(s.calib) of 3" }
+        if let t = s.runDown { return "On battery, down to \(t)%" }
         if s.calibrating { return "macOS calibrating" }  // before the heat pause: at 80 and up it works through the Mac's limit, which macOS has set aside
         if s.paused { return "Paused, battery warm" }
         if s.mode == .holding && s.sailing && s.resting && s.level != s.limit { return "Resting down to \(s.bottom)%" }
@@ -59,7 +78,7 @@ func statusText(_ s: Snapshot) -> String {
         if !s.plugged { return "On battery" }
         if s.mode == .fullOnce { return "Charging to full, once" }
         let h = holdLevel(s)
-        return s.charging && s.level < h ? "Charging to \(h)%" : "Holding at \(h)%"
+        return s.charging && s.level < h ? "Charging to \(h)%" : s.level > h ? "Above \(h)%, not charging" : "Holding at \(h)%"
     }
 }
 
@@ -111,6 +130,21 @@ final class Keeper: ObservableObject {
     private var bottom: Int { didSet { UserDefaults.standard.set(bottom, forKey: "sailBottom") } }
     private var pausedAt: Int?  // work queue only: see heatStep
     private var resting = false  // work queue only: see nextResting
+    // work queue only: mockup v3
+    private var runDown: Int?
+    private var calib = 0
+    private var skipped: [UUID: Date] = [:]  // "Skip this time": the occurrence (by its end) left out
+    private var ledIsDark = false
+    private var helperOld = false
+    private var settings: Settings {
+        didSet {
+            let d = UserDefaults.standard
+            d.set(try? JSONEncoder().encode(settings.schedules), forKey: "schedules")
+            d.set(settings.keepOnQuit, forKey: "keepOnQuit"); d.set(settings.led.rawValue, forKey: "magsafeLight")
+            d.set(settings.calibratedAt, forKey: "calibratedAt")
+        }
+    }
+    private let ledLine = ChargerClient(path: helperSocket)  // kept open while the light is dark: its closing gives the light back
     private let charger = ChargerClient(path: helperSocket)
     private var cutNow = false { didSet { napGuard() } }  // work queue only: the helper's last answer
     private var activity: NSObjectProtocol?  // while cut: keeps App Nap from stretching the 30 s check-in past the helper's 150 s
@@ -124,6 +158,12 @@ final class Keeper: ObservableObject {
         limit = saved == 0 ? 80 : clampLimit(saved)
         let b = UserDefaults.standard.integer(forKey: "sailBottom")
         bottom = clampBottom(b == 0 ? limit - cutBand : b, limit: limit)
+        let d = UserDefaults.standard
+        settings = Settings(schedules: (d.data(forKey: "schedules")).flatMap { try? JSONDecoder().decode([Schedule].self, from: $0) } ?? [],
+                            keepOnQuit: d.bool(forKey: "keepOnQuit"), led: LedMode(rawValue: d.integer(forKey: "magsafeLight")) ?? .normal,
+                            calibratedAt: d.object(forKey: "calibratedAt") as? Date)
+        // Quit with "Keep my limit" left the Mac's limit on: take it back over instead of asking as if it were someone else's.
+        if d.bool(forKey: "leftOn") { adopt = true; d.removeObject(forKey: "leftOn") }
         limiter = MCL().map(Limiter.init)
         let nc = NSWorkspace.shared.notificationCenter
         for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false)] {
@@ -150,12 +190,23 @@ final class Keeper: ObservableObject {
         let b = battery()
         let level = b.current ?? 0
         if fullOnce && level >= 100 { fullOnce = false }  // the one-off ends by itself; before the plan, which depends on it
-        let rb = restBottom(limit: limit, sailing: sailOn, bottom: bottom)
+        // Schedules: an ended once schedule turns itself off; the one running now (highest limit) replaces the slider's limit.
+        let now = Date()
+        if settings.schedules.contains(where: { expired($0, now: now) }) { settings.schedules = settings.schedules.map { var x = $0; if expired(x, now: now) { x.on = false }; return x } }
+        skipped = skipped.filter { $0.value > now }
+        let sched = activeSchedule(settings.schedules, now: now, skipped: skipped)
+        let top = sched.map { clampLimit($0.0.limit) } ?? limit
+        if calib > 0 { calib = nextCalib(calib, level: b.current) ?? 0; if calib == 0 { settings.calibratedAt = now } }
+        // Run down ends at its level, when unplugged, or when the lid closes (cutting power could put the Mac to sleep).
+        if let t = runDown, b.current.map({ $0 <= t }) ?? false || b.external != true || lidClosed() { runDown = nil }
+        let filling = fullOnce || calib == 1 || calib == 3
+        let rb = restBottom(limit: top, sailing: sailOn, bottom: clampBottom(bottom, limit: top))
         if let lv = b.current {  // an unreadable level changes neither state
             pausedAt = heatStep(on: heatOn, tempF: b.tempF, level: lv, pausedAt: pausedAt)
-            resting = nextResting(level: lv, top: limit, bottom: rb, resting: resting)
+            resting = nextResting(level: lv, top: top, bottom: rb, resting: resting)
         }
-        let p = plan(level: level, limit: limit, bottom: rb, resting: resting, fullOnce: fullOnce, pausedAt: pausedAt)
+        var p = plan(level: level, limit: top, bottom: rb, resting: resting, fullOnce: filling, pausedAt: pausedAt)
+        if runDown != nil || calib == 2 { p.cut = true }  // on battery with the charger plugged in
         var mode = Mode.unsupported
         var mac: LimitState? = nil
         if let l = limiter {
@@ -164,12 +215,12 @@ final class Keeper: ObservableObject {
                 mode = l.release() ? .macLimit : .failed("Could not put charging back to normal")
             } else if aside {
                 mode = .steppedAside
-            } else if fullOnce && p.mac == nil {
+            } else if filling && p.mac == nil {
                 mode = l.release() ? .fullOnce : .failed("Could not put charging back to normal")
             } else {
                 let r = l.apply(p.mac ?? 100, adopt: adopt, reassert: reassert)  // under 80 the Mac's 80 is the backstop
                 switch r {
-                case .ok: mode = fullOnce ? .fullOnce : .holding
+                case .ok: mode = filling ? .fullOnce : .holding
                 case .foreign: mode = .foreign
                 case .changed: aside = true; mode = .steppedAside
                 case .unsupported: mode = .unsupported
@@ -183,16 +234,22 @@ final class Keeper: ObservableObject {
             if notHolding(mode) { mac = l.current() }
         }
         let active = mode == .holding || mode == .fullOnce
+        if !active { runDown = nil; calib = 0 }  // both need Charge Keeper holding; started only from the holding panel
         let want = active && b.current != nil && p.cut  // an unreadable level never switches the charger off
-        let need = want || mode == .holding && limit < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
-        let note = steerCharger(need: need, want: want)
+        let need = want || mode == .holding && top < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
+        let note = steerCharger(need: need, want: want, deep: calib == 2)
+        steerLight(ledDark(settings.led, plugged: b.external == true, charging: b.charging == true))
         // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
         let paused = active && pausedAt != nil && (cutNow || b.external == true && level >= macFloor)
         // Only above our level on the charger: once the battery is back down, the flag alone never changes the text.
         let calibrating = mode == .holding && !cutNow && b.external == true && level > max(limit, macFloor) && macChargingToFull()
-        let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: limit, mode: mode, mac: mac, cut: cutNow, cutNote: note,
-                         heatOn: heatOn, sailing: sailOn, bottom: bottom, tempF: b.tempF, paused: paused, resting: resting, calibrating: calibrating)
+        let keep = settings.keepOnQuit && mode == .holding && sched == nil && p.mac == limit && limit >= macFloor && !p.cut
+        let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: top, mode: mode, mac: mac, cut: cutNow, cutNote: note,
+                         heatOn: heatOn, sailing: sailOn, bottom: clampBottom(bottom, limit: top), tempF: b.tempF, paused: paused, resting: resting, calibrating: calibrating,
+                         runDown: runDown, calib: calib, scheduled: sched.map { Scheduled(name: $0.0.name, until: $0.1, back: limit) },
+                         lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled, keepsOnQuit: keep, helperOld: helperOld, settings: settings)
         DispatchQueue.main.async {
+            keepLimitOnExit = keep
             self.snap = s
             let before = self.anim
             self.refreshAnimation()
@@ -203,12 +260,13 @@ final class Keeper: ObservableObject {
     // Work queue. need: the settings may switch the charger now (under 80, the range's bottom under 80, or a heat pause
     // under 80); each step then asks the helper (which also tells it the app is alive) for power off (want) or on.
     // Otherwise only a cut of ours is given back. AlDente running or the lid closed: Charge Keeper does not switch the charger.
-    private func steerCharger(need: Bool, want: Bool) -> CutNote? {
+    private func steerCharger(need: Bool, want: Bool, deep: Bool) -> CutNote? {
         let aldente = need && aldenteRunning()
         guard need || cutNow else { return nil }
         let lid = need && lidClosed()  // cutting power can put a Mac with an outside screen to sleep
         let w = want && !aldente && !lid
-        let r = charger.send(w)
+        let r = charger.send(byte: w ? (deep ? cmdDeep : cmdCut) : cmdOn)
+        if w && deep && r == replyOn { helperOld = true; charger.disconnect(); return .oldHelper }  // an old helper reads "d" as power on
         cutNow = r == replyCut
         if !need || !w && r == replyOn { charger.disconnect() }  // nothing of ours is off: no need to keep the line open
         if aldente { return .aldente }
@@ -216,6 +274,15 @@ final class Keeper: ObservableObject {
         if r == replyBusy { return .otherApp }
         if r != replyCut && r != replyOn { return .noHelper }
         return lid ? .lidClosed : nil
+    }
+
+    // Work queue. The MagSafe light: dark asked again every step while wanted (a restarted helper has given it back), normal once.
+    private func steerLight(_ dark: Bool) {
+        guard dark || ledIsDark else { return }
+        let r = ledLine.send(byte: dark ? cmdLedDark : cmdLedNormal)
+        if r != nil && r != replyDone && r != replyErr { helperOld = true }
+        ledIsDark = dark && r == replyDone
+        if !ledIsDark { ledLine.disconnect() }
     }
 
     // Main thread. The timer runs only while charging with a screen awake; any other state stops it and shows today's plain icon.
@@ -261,7 +328,32 @@ final class Keeper: ObservableObject {
             self.aside = false; self.adopt = !macLimit; self.step()
         }
     }
-    func quit() { NSApplication.shared.terminate(nil) }  // ends in exit(), whose handler puts charging back first
+    func quit() {
+        if keepLimitOnExit { UserDefaults.standard.set(true, forKey: "leftOn") }
+        NSApplication.shared.terminate(nil)  // ends in exit(), whose handler puts charging back first (or, with "Keep my limit", leaves it)
+    }
+    // Mockup v3
+    func startRunDown() { work.async { self.runDown = self.limit; self.step() } }
+    func stopRunDown() { work.async { self.runDown = nil; self.step() } }
+    func startCalibration() { work.async { self.runDown = nil; self.fullOnce = false; self.calib = 1; self.step() } }
+    func cancelCalibration() { work.async { self.calib = 0; self.step() } }
+    func skipSchedule() { work.async { if let (s, end) = activeSchedule(self.settings.schedules, now: Date(), skipped: self.skipped) { self.skipped[s.id] = end }; self.step() } }
+    func setLowPower(_ on: Bool) {
+        work.async {
+            let r = self.charger.send(byte: on ? cmdLowOn : cmdLowOff)
+            if r != nil && r != replyDone && r != replyErr { self.helperOld = true }
+            if !self.cutNow { self.charger.disconnect() }
+            self.step()
+        }
+    }
+    func update(_ change: @escaping (inout Settings) -> Void) { work.async { change(&self.settings); self.step() } }
+    func open(_ link: LinkAction) {
+        switch link {
+        case .limit(let v): work.async { self.runDown = nil; self.calib = 0; self.fullOnce = false }; setLimit(v)
+        case .full: chargeToFullOnce()
+        case .runDown: startRunDown()
+        }
+    }
 }
 
 let wakeChecks: [TimeInterval] = [0, 5, 20]  // seconds after wake
@@ -283,7 +375,7 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         // reopen guard below: the open panel closes itself at mouse-down, the action would come only at mouse-up.
         item.button?.sendAction(on: [.leftMouseDown])
         item.button?.setAccessibilityLabel("Charge Keeper")
-        let host = NSHostingController(rootView: PanelHost(keeper: keeper))
+        let host = NSHostingController(rootView: PanelHost(keeper: keeper, openSettings: { [weak self] in self?.openSettings() }))
         host.sizingOptions = .preferredContentSize  // the panel is wider in the two-limits note
         popover.contentViewController = host
         popover.behavior = .transient
@@ -296,6 +388,25 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         let s = keeper.snap
         item.button?.image = isCharging(s) ? liveChargingIcon(level: s.level, fill: iconFill(keeper.anim)) : makeBattery(level: s.level)
     }
+
+    // Mockup v3: one Settings window, made on first use and reused.
+    private var settingsWindow: NSWindow?
+    func openSettings() {
+        popover.performClose(nil)
+        if settingsWindow == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsHost(keeper: keeper)))
+            w.title = "Charge Keeper Settings"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            settingsWindow = w
+        }
+        settingsWindow?.center()
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // chargekeeper:// links (Info.plist), for Shortcuts' "Open URLs" action, scripts or a bookmark.
+    func application(_ application: NSApplication, open urls: [URL]) { for u in urls { if let a = linkAction(u) { keeper.open(a) } } }
 
     private var closedAt = Date.distantPast
     private let reopenGuard = 0.3  // seconds: a click this soon after a close is the same click
@@ -327,9 +438,12 @@ func runApp() -> Never {
 
 struct PanelHost: View {
     @ObservedObject var keeper: Keeper
+    var openSettings: () -> Void = {}
     var body: some View {
         Panel(s: keeper.snap, bar: keeper.bar, act: PanelActions(setLimit: keeper.setLimit, setBottom: keeper.setBottom, heat: keeper.setHeat, sailing: keeper.setSailing,
-                                                          full: keeper.chargeToFullOnce, back: keeper.backToLimit, choose: keeper.choose, quit: keeper.quit))
+                                                          full: keeper.chargeToFullOnce, back: keeper.backToLimit, choose: keeper.choose, quit: keeper.quit,
+                                                          runDown: keeper.startRunDown, stopRunDown: keeper.stopRunDown, cancelCalibration: keeper.cancelCalibration,
+                                                          skip: keeper.skipSchedule, lowPower: keeper.setLowPower, settings: openSettings))
     }
 }
 
@@ -342,6 +456,12 @@ struct PanelActions {
     var back: () -> Void = {}
     var choose: (Bool) -> Void = { _ in }  // true: the Mac's own limit
     var quit: () -> Void = {}
+    var runDown: () -> Void = {}
+    var stopRunDown: () -> Void = {}
+    var cancelCalibration: () -> Void = {}
+    var skip: () -> Void = {}
+    var lowPower: (Bool) -> Void = { _ in }
+    var settings: () -> Void = {}
 }
 
 struct Panel: View {
@@ -362,13 +482,36 @@ struct Panel: View {
                 Spacer()
                 Text(statusText(s)).foregroundStyle(.secondary)
             }
-            if !showsChoice(s.mode) { LevelBar(level: s.level, marker: s.mode == .holding ? s.limit : s.mode == .macLimit && s.mac?.enabled == true ? s.mac?.limit : nil,
+            if !showsChoice(s.mode) { LevelBar(level: s.level, marker: s.calib == 2 ? calibFloor : s.calib > 0 ? nil : s.mode == .holding ? s.limit : s.mode == .macLimit && s.mac?.enabled == true ? s.mac?.limit : nil,
                                                low: s.mode == .holding && s.sailing ? s.bottom : nil, stretch: isCharging(s) ? bar : 0) }
             if s.paused, let f = s.tempF {
                 Note(Text("Charging is paused because the battery is \(degrees(f)).").bold().foregroundColor(.orange)
                     + Text(" It starts again by itself once the battery cools to \(degrees(heatResumeF)). ")
                     + Text(s.cut ? "Your Mac runs on its battery meanwhile." : "Your Mac keeps running on the charger meanwhile."))
             }
+            if s.calib > 0 {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(["Charge to 100%", "Run down to \(calibFloor)% on battery", "Charge to 100%, then back to \(s.scheduled?.back ?? s.limit)%"].enumerated()), id: \.offset) { i, t in
+                        Text("\(i + 1). \(t)\(i + 1 == s.calib ? " (now)" : "")").fontWeight(i + 1 == s.calib ? .semibold : .regular)
+                            .strikethrough(i + 1 < s.calib).foregroundStyle(i + 1 < s.calib ? .secondary : .primary)
+                    }
+                }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                if let n = s.cutNote { Note(cutNoteText(n)) }
+                Text("Keep the charger plugged in. This takes most of a day; you can use the Mac meanwhile.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Button { act.cancelCalibration() } label: { Text("Cancel calibration").frame(maxWidth: .infinity) }
+            } else if let t = s.runDown {
+                Note(Text("Your Mac is running on its battery although the charger is plugged in.").bold().foregroundColor(.orange)
+                     + Text(" At \(t)% it switches back to the charger by itself. Quitting or unplugging also switches back."), cool: true)
+                if let n = s.cutNote { Note(cutNoteText(n)) }
+                Button { act.stopRunDown() } label: { Text("Stop and use the charger").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
+                switches
+            } else if let sc = s.scheduled, s.mode == .holding {
+                Note(Text("Schedule \"\(sc.name)\":").bold().foregroundColor(.orange)
+                     + Text(" \(s.limit == 100 ? "full" : "\(s.limit)%") until \(sc.until.formatted(.dateTime.weekday(.wide).hour().minute())), then back to \(sc.back)%."), cool: true)
+                if let n = s.cutNote { Note(cutNoteText(n)) }
+                Button { act.skip() } label: { Text("Skip this time").frame(maxWidth: .infinity) }
+                switches
+            } else {
             switch s.mode {
             case .foreign, .steppedAside:
                 Note((s.mode == .foreign ? Text("Your Mac has its own charge limit turned on.")
@@ -409,13 +552,21 @@ struct Panel: View {
                     }
                 }
                 if let n = s.cutNote { Note(cutNoteText(n)) }
+                if s.mode == .holding && s.plugged && s.level > holdLevel(s) && !s.cut && !s.calibrating {
+                    Button { act.runDown() } label: { Text("Run down to \(s.limit)% on battery").frame(maxWidth: .infinity) }
+                }
                 Button { act.full() } label: { Text("Charge to full once").frame(maxWidth: .infinity) }
                 switches
             }
+            }
             Divider()
-            Button(notHolding(s.mode) ? "Quit" : "Quit (charging turns back on)") { act.quit() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button(notHolding(s.mode) ? "Quit" : s.keepsOnQuit ? "Quit (keeps \(s.limit)%)" : "Quit (charging turns back on)") { act.quit() }
+                Spacer()
+                Button("Settings…") { act.settings() }.keyboardShortcut(",")
+            }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
         }
-        .padding(14).frame(width: notHolding(s.mode) ? 300 : 272)
+        .padding(14).frame(width: notHolding(s.mode) || s.runDown != nil || s.calib > 0 ? 300 : 272)
         .onAppear { draft = Double(s.limit); draftBottom = Double(s.bottom) }
         .onChange(of: s.limit) { _, new in draft = Double(new) }
         .onChange(of: s.bottom) { _, new in draftBottom = Double(new) }
@@ -428,6 +579,8 @@ struct Panel: View {
                 on: s.heatOn, set: act.heat)
         Setting(title: "Sailing range", hint: s.sailing ? "Charges up to \(s.limit)%, then waits until \(s.bottom)%." : "Let the battery drift down a little before charging again.",
                 on: s.sailing, set: act.sailing)
+        Setting(title: "Low power mode", hint: s.helperOld ? "Needs the charger helper updated." : "The Mac's own energy saver. \(s.lowPower ? "On" : "Off") now.",
+                on: s.lowPower, set: act.lowPower)
     }
 }
 
@@ -510,16 +663,18 @@ func cutNoteText(_ n: CutNote) -> Text {
     case .aldente: ("AlDente is running.", " Charge Keeper does not switch the charger while it runs, so it holds at 80% for now.")
     case .otherApp: ("Another app has switched the charger off.", " Charge Keeper leaves it alone and holds at 80% for now.")
     case .lidClosed: ("The lid is closed.", " Switching the charger off could put the Mac to sleep, so Charge Keeper holds at 80% until it opens.")
+    case .oldHelper: ("The charger helper is out of date.", " It needs updating once (with your Mac password) before Charge Keeper can run the battery down this far.")
     }
     return Text(head).bold().foregroundColor(.orange) + Text(rest)
 }
 
 struct Note: View {
     let text: Text
-    init(_ text: Text) { self.text = text }
+    var cool = false  // mockup v3: blue for "Charge Keeper is doing what you asked", orange for warnings
+    init(_ text: Text, cool: Bool = false) { self.text = text; self.cool = cool }
     var body: some View {
         text.fixedSize(horizontal: false, vertical: true)
             .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+            .background((cool ? Color.blue.opacity(0.12) : Color.orange.opacity(0.15)), in: RoundedRectangle(cornerRadius: 8))
     }
 }

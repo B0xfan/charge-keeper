@@ -90,7 +90,62 @@ func helperSelftest(_ expect: (Bool, String) -> Void) {
     expect(q.sync(execute: { other.start(path: dir + "/o.sock") }) && ChargerClient(path: dir + "/o.sock").send(true) == nil, "socket: other users are refused")
     expect(ChargerClient(path: dir + "/none.sock").send(true) == nil, "no helper installed: no answer")
     expect(!q.sync(execute: { server.start(path: "/tmp/" + String(repeating: "x", count: 120)) }), "socket: a too-long path is refused, not shortened")
+    // Mockup v3 helper parts: the deep cut's lower floor, low power and the MagSafe light (given back when its line closes).
+    let dsw = FakeSwitch()
+    let dg = ChargerGuard(dsw, marker: dir + "/cut4")
+    _ = dg.command(cmdDeep, fd: 7, now: 0); dg.tick(now: 1, level: 30)
+    expect(dsw.v == powerOff, "deep cut: stays off under the normal floor of 40")
+    dg.tick(now: 2, level: deepFloor)
+    expect(dsw.v == powerOn, "deep cut: power on at its own floor")
+    _ = dg.command(cmdDeep, fd: 7, now: 3); _ = dg.command(cmdCut, fd: 7, now: 4); dg.tick(now: 5, level: 30)
+    expect(dsw.v == powerOn, "a normal cut after a deep one has the normal floor again")
+    let led = FakeSwitch(); var lp: Bool? = nil
+    let ex = Extras(led: led, lowPower: { lp = $0; return true })
+    expect(ex.command(cmdLowOn, fd: 7) == replyDone && lp == true && ex.command(cmdLowOff, fd: 7) == replyDone && lp == false, "low power on and off")
+    expect(ex.command(cmdLedDark, fd: 7) == replyDone && led.v == ledOff, "MagSafe light dark")
+    ex.closed(8)
+    expect(led.v == ledOff, "another line closing leaves the light")
+    ex.closed(7)
+    expect(led.v == ledSystem, "the app's line closing gives the light back to macOS")
+    expect(ex.command(cmdCut, fd: 7) == nil && Extras(led: nil, lowPower: { _ in false }).command(cmdLedDark, fd: 7) == replyErr, "extras: the charger's commands pass through; no light key is an error")
+    let lsrv = HelperServer(q.sync { ChargerGuard(FakeSwitch(), marker: dir + "/cut5") }, queue: q, uid: getuid(), extras: ex)
+    expect(q.sync(execute: { lsrv.start(path: dir + "/l.sock") }), "socket with extras starts")
+    let lc = ChargerClient(path: dir + "/l.sock")
+    expect(lc.send(byte: cmdLedDark) == replyDone && q.sync { led.v } == ledOff, "socket: light dark")
+    lc.disconnect(); usleep(300_000)
+    expect(q.sync { led.v } == ledSystem, "socket: the app quitting gives the light back")
+    withExtendedLifetime(lsrv) {}
     withExtendedLifetime((server, other)) {}
+}
+
+func featureSelftest(_ expect: (Bool, String) -> Void) {
+    var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/Costa_Rica")!
+    func d(_ day: Int, _ h: Int, _ m: Int = 0) -> Date { cal.date(from: DateComponents(year: 2026, month: 11, day: day, hour: h, minute: m))! }  // Nov 16 2026 is a Monday
+    let trip = Schedule(name: "Trip", limit: 100, from: d(17, 7), until: d(18, 18))
+    expect(occurrenceEnd(trip, now: d(17, 6), cal: cal) == nil && occurrenceEnd(trip, now: d(17, 7), cal: cal) == d(18, 18) && occurrenceEnd(trip, now: d(18, 18), cal: cal) == nil, "once: runs from its start up to its end")
+    expect(expired(trip, now: d(18, 18)) && !expired(trip, now: d(18, 17)), "once: ends itself")
+    let wk = Schedule(name: "Weekdays", limit: 90, days: weekdays, from: d(16, 6), until: d(16, 8))
+    expect(occurrenceEnd(wk, now: d(16, 7), cal: cal) == d(16, 8) && occurrenceEnd(wk, now: d(16, 8), cal: cal) == nil && occurrenceEnd(wk, now: d(21, 7), cal: cal) == nil, "weekdays 6 to 8: Monday yes, Saturday no")
+    let night = Schedule(name: "Night", limit: 60, days: [2], from: d(16, 22), until: d(16, 6))
+    expect(occurrenceEnd(night, now: d(16, 23), cal: cal) == d(17, 6) && occurrenceEnd(night, now: d(17, 5), cal: cal) == d(17, 6) && occurrenceEnd(night, now: d(17, 23), cal: cal) == nil, "overnight: Monday 22:00 to Tuesday 6:00")
+    var off = wk; off.on = false
+    expect(occurrenceEnd(off, now: d(16, 7), cal: cal) == nil, "a switched-off schedule never runs")
+    let both = [wk, trip]
+    expect(activeSchedule(both, now: d(17, 7, 30), skipped: [:], cal: cal)?.0.name == "Trip", "two running: the higher limit wins")
+    expect(activeSchedule(both, now: d(17, 7, 30), skipped: [trip.id: d(18, 18)], cal: cal)?.0.name == "Weekdays", "skip this time leaves that occurrence out")
+    expect(activeSchedule([wk], now: d(17, 7), skipped: [wk.id: d(16, 8)], cal: cal) != nil, "a skip covers only its own occurrence")
+    expect(nextCalib(1, level: 99) == 1 && nextCalib(1, level: 100) == 2 && nextCalib(2, level: 16) == 2 && nextCalib(2, level: calibFloor) == 3
+           && nextCalib(3, level: 100) == nil && nextCalib(2, level: nil) == 2, "calibration: full, down to 15, full, done")
+    expect(ledDark(.offWhileHeld, plugged: true, charging: false) && !ledDark(.offWhileHeld, plugged: true, charging: true) && ledDark(.off, plugged: true, charging: true)
+           && !ledDark(.off, plugged: false, charging: false) && !ledDark(.normal, plugged: true, charging: false), "MagSafe light rules")
+    expect(linkAction(URL(string: "chargekeeper://limit/80")!) == .limit(80) && linkAction(URL(string: "chargekeeper://full")!) == .full
+           && linkAction(URL(string: "ChargeKeeper://rundown")!) == .runDown && linkAction(URL(string: "chargekeeper://limit/30")!) == nil
+           && linkAction(URL(string: "chargekeeper://limit/abc")!) == nil && linkAction(URL(string: "https://limit/80")!) == nil, "links")
+    var r = Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)
+    expect(statusText(r) == "On battery, down to 80%" && !isCharging(r), "run down status")
+    r = Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)
+    expect(statusText(r) == "Calibrating, step 2 of 3", "calibration status")
+    expect(statusText(Snapshot(level: 94, plugged: true, charging: false, limit: 80, mode: .holding)) == "Above 80%, not charging", "above the limit on the charger")
 }
 
 func selftest() -> Int32 {
@@ -195,6 +250,7 @@ func selftest() -> Int32 {
     expect(statusText(t) == "Holding at 60%", "cut inside the range")
     t = Snapshot(level: 70, plugged: true, charging: true, limit: 60, mode: .holding, cutNote: .noHelper)
     expect(statusText(t) == "Charging to 80%" && isCharging(t), "no helper: the Mac's 80 holds and the text says so")
+    featureSelftest(expect)
     helperSelftest(expect)
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
     return bad == 0 ? 0 : 1

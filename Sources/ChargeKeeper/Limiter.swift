@@ -75,6 +75,14 @@ final class Limiter {
         return releaseLocked()
     }
 
+    // "Keep my limit" on quit (mockup v3, 80 and up only): forget the limit without putting it back, so the Mac's own limit
+    // keeps holding after the app is gone. The watchdog and the start-up note go too, or they would undo it.
+    func leaveOn() {
+        lock.lock(); defer { lock.unlock() }
+        closed = true
+        disownLocked()
+    }
+
     private func fail(_ why: String) -> Applied {
         let back = releaseLocked()
         return .failed(back ? why : "\(why), and putting charging back failed: run Charge Keeper with --restore")
@@ -120,11 +128,14 @@ final class Limiter {
 // MARK: - every ending we can catch restores first
 
 var activeLimiter: Limiter? = nil
+// Main thread only: set by Keeper while "Keep my limit" applies right now. Read by the normal exit path only; a crash or a
+// kill signal still puts charging back (the watchdog and the signal handlers below never look at it).
+var keepLimitOnExit = false
 var signalSources: [DispatchSourceSignal] = []
 
 func installExitSafety(_ l: Limiter) {
     activeLimiter = l
-    atexit { _ = activeLimiter?.release(final: true) }  // covers the Quit button too: terminate() ends in exit()
+    atexit { if keepLimitOnExit && Thread.isMainThread { activeLimiter?.leaveOn() } else { _ = activeLimiter?.release(final: true) } }  // covers the Quit button too: terminate() ends in exit()
     for sig in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
         signal(sig, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: sig, queue: DispatchQueue.global())
