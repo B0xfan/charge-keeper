@@ -41,6 +41,15 @@ struct SettingsView: View {
                             .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                     }
                 }
+                Picker(selection: Binding(get: { s.calibEvery }, set: { v in change { $0.calibEvery = v; $0.calibSince = Date() } })) {
+                    ForEach(calibEveryChoices, id: \.self) { m in Text(m == 0 ? "Off" : m == 1 ? "Every month" : "Every \(m) months").tag(m) }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Calibration cycle")
+                        Text(nextCalibration(months: s.calibEvery, last: s.calibratedAt, since: s.calibSince).map { $0 <= Date() ? "Due now: starts once plugged in." : "Next: \($0.formatted(date: .abbreviated, time: .omitted)) or later, once plugged in." } ?? "Runs only when you press Start under Battery care.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
                     Button("Add schedule…") {
                         let start = Calendar.current.date(bySettingHour: 7, minute: 0, second: 0, of: Date().addingTimeInterval(86_400)) ?? Date()

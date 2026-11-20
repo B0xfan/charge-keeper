@@ -1,6 +1,6 @@
 // Limits under 80%. macOS refuses its own limit below 80 (tested 2026-10-27), so under 80 Charge Keeper keeps the Mac's limit
 // at 80 as a backstop and switches the charger's power off at John's limit and back on `cutBand` points lower. The switch is
-// the SMC key CHIE (0x08 off, 0x00 on; the same switch batt's adapter mode and AlDente's discharge use). Writing it needs
+// an SMC key (chargerKeys; on John's M2 CHIE, the same switch batt's adapter mode and AlDente's discharge use). Writing it needs
 // root, so a small helper does it: this program with --helper, started by launchd as root (scripts/install-helper.sh).
 // The helper owns the safety: power goes back on when the app's connection closes (quit, crash, force-quit), when the app
 // stops checking in (hung), before sleep, at the helper's own start (boot, or a restart after it died), on a stop signal,
@@ -75,12 +75,20 @@ func aldenteRunning() -> Bool { NSWorkspace.shared.runningApplications.contains 
 
 protocol ChargerSwitch: AnyObject { func read() -> UInt8?; func write(_ v: UInt8) -> Bool }
 
+// The charger switch differs by firmware (batt's adapter keys): CHIE (off 0x08) on John's M2 since macOS 26, CH0I or CH0J
+// (off 0x01) on Apple chips with older firmware. Intel is not covered: the app is built for Apple chips only.
+let chargerKeys: [(key: String, off: UInt8)] = [("CHIE", 0x08), ("CH0I", 0x01), ("CH0J", 0x01)]
+func fromChip(_ raw: UInt8, off: UInt8?) -> UInt8 { off == nil ? raw : raw == 0 ? powerOn : powerOff }  // charger keys: any non-zero byte is off (another app may use its own)
+func toChip(_ v: UInt8, off: UInt8?) -> UInt8 { off.map { v == powerOff ? $0 : v } ?? v }
+func chargerSwitch() -> SMCSwitch? { chargerKeys.lazy.compactMap { SMCSwitch(key: $0.key, off: $0.off) }.first }
+
 // One 1-byte SMC key (CHIE: the charger switch, ACLC: the MagSafe light). Request layout: key@0, dataSize@28, result@40, command@42, bytes@48 (5 read, 6 write, 9 key info).
 final class SMCSwitch: ChargerSwitch {
     private var conn: io_connect_t = 0
-    private let key: String
-    init?(key: String = "CHIE") {
-        self.key = key
+    let key: String
+    private let off: UInt8?  // charger keys: the chip's "off" byte, shown to the helper as powerOff whatever the key
+    init?(key: String, off: UInt8? = nil) {
+        self.key = key; self.off = off
         let svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleSMC"))
         guard svc != 0 else { return nil }
         defer { IOObjectRelease(svc) }
@@ -98,8 +106,8 @@ final class SMCSwitch: ChargerSwitch {
         let rc = b.withUnsafeBytes { i in out.withUnsafeMutableBytes { o in IOConnectCallStructMethod(conn, 2, i.baseAddress, 80, o.baseAddress, &size) } }
         return rc == KERN_SUCCESS && out[40] == 0 ? out : nil
     }
-    func read() -> UInt8? { call(5)?[48] }
-    func write(_ v: UInt8) -> Bool { call(6, v) != nil }
+    func read() -> UInt8? { call(5).map { fromChip($0[48], off: off) } }
+    func write(_ v: UInt8) -> Bool { call(6, toChip(v, off: off)) != nil }
 }
 
 // MARK: - the helper's rules (one queue; pure apart from the switch and the marker file)
@@ -282,7 +290,7 @@ func runHelper(_ args: [String]) -> Never {
         sw = FileSwitch(dir + "/switch"); sock = dir + "/helper.sock"; marker = dir + "/cut"; uid = getuid()
         extras = Extras(led: FileSwitch(dir + "/led"), lowPower: { on in (try? Data(on ? "1".utf8 : "0".utf8).write(to: URL(fileURLWithPath: dir + "/lowpower"))) != nil })
     } else {
-        guard let u = uid_t(args[2]), let s = SMCSwitch() else { exit(1) }  // launchd starts it again
+        guard let u = uid_t(args[2]), let s = chargerSwitch() else { exit(1) }  // launchd starts it again
         sw = s; sock = helperSocket; marker = helperMarker; uid = u
         extras = Extras(led: SMCSwitch(key: "ACLC"), lowPower: setLowPower)  // no ACLC key (no MagSafe): the light answers an error
     }

@@ -55,6 +55,14 @@ func nextCalib(_ step: Int, level: Int?) -> Int? {
     }
 }
 
+// Calibration on a schedule (John, 2026-11-20): every `months` months (0 = off), counted from the last run or from when it
+// was last set or cancelled, whichever is later. It starts the first time it is due while Charge Keeper holds the limit on the charger.
+let calibEveryChoices = [0, 1, 2, 3]
+func nextCalibration(months: Int, last: Date?, since: Date?, cal: Calendar = .current) -> Date? {
+    guard months > 0, let from = [last, since].compactMap({ $0 }).max() else { return nil }
+    return cal.date(byAdding: .month, value: months, to: from)
+}
+
 // MARK: - MagSafe light
 
 enum LedMode: Int, CaseIterable { case normal, offWhileHeld, off }

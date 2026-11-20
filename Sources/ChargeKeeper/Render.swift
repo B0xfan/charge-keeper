@@ -72,7 +72,7 @@ private struct Stage: View {
     let wk = Schedule(name: "Weekdays", limit: 90, on: false, days: weekdays, from: start.addingTimeInterval(-3600), until: start.addingTimeInterval(3600))
     for dark in [false, true] {
         let tone = dark ? "dark" : "light"
-        ok = save(SettingsView(s: Settings(schedules: [trip, wk])).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(tone).png") && ok
+        ok = save(SettingsView(s: Settings(schedules: [trip, wk], calibratedAt: start.addingTimeInterval(-20 * 86_400), calibEvery: 1)).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(tone).png") && ok
         ok = save(ScheduleEditor(draft: trip, isNew: true, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-\(tone).png") && ok
     }
     // The icon alone, drawn 8 times larger (scale 2 = real size on a retina screen), in the colour the menu bar would give it (black on light, white on dark).

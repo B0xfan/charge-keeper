@@ -39,6 +39,8 @@ struct Settings: Equatable {
     var keepOnQuit = false
     var led = LedMode.normal
     var calibratedAt: Date? = nil
+    var calibEvery = 0  // months; 0 = no calibration schedule
+    var calibSince: Date? = nil  // when the calibration schedule was set or a scheduled run was cancelled
 }
 
 enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed, oldHelper }
@@ -132,11 +134,13 @@ final class Keeper: ObservableObject {
     private var resting = false  // work queue only: see nextResting
     // work queue only: mockup v3
     private var runDown: Int?
-    private var calib = 0
+    // Any end of a cycle (done, cancelled or cut short) restarts the schedule's count, so a run that cannot finish is not started again at once.
+    private var calib = 0 { didSet { if oldValue > 0 && calib == 0 && settings.calibEvery > 0 { settings.calibSince = Date() } } }
     private var skipped: [UUID: Date] = [:]  // "Skip this time": the occurrence (by its end) left out
     private var ledIsDark = false
     private var helperOld = false  // once seen, nothing new is sent: an old helper reads any new byte as "power on" and would undo a cut
     private var leftOnCheck = false  // work queue only: the last run quit with "Keep my limit"; checked once, at the first step
+    private var wasHolding = false  // the last step held the limit (a scheduled calibration waits for that)
     private var lastTop = 0  // the limit in force at the last step (a schedule's or the slider's)
     private var settings: Settings {
         didSet {
@@ -144,6 +148,7 @@ final class Keeper: ObservableObject {
             d.set(try? JSONEncoder().encode(settings.schedules), forKey: "schedules")
             d.set(settings.keepOnQuit, forKey: "keepOnQuit"); d.set(settings.led.rawValue, forKey: "magsafeLight")
             d.set(settings.calibratedAt, forKey: "calibratedAt")
+            d.set(settings.calibEvery, forKey: "calibEvery"); d.set(settings.calibSince, forKey: "calibSince")
         }
     }
     private let ledLine = ChargerClient(path: helperSocket)  // kept open while the light is dark: its closing gives the light back
@@ -163,7 +168,8 @@ final class Keeper: ObservableObject {
         let d = UserDefaults.standard
         settings = Settings(schedules: (d.data(forKey: "schedules")).flatMap { try? JSONDecoder().decode([Schedule].self, from: $0) } ?? [],
                             keepOnQuit: d.bool(forKey: "keepOnQuit"), led: LedMode(rawValue: d.integer(forKey: "magsafeLight")) ?? .normal,
-                            calibratedAt: d.object(forKey: "calibratedAt") as? Date)
+                            calibratedAt: d.object(forKey: "calibratedAt") as? Date,
+                            calibEvery: d.integer(forKey: "calibEvery"), calibSince: d.object(forKey: "calibSince") as? Date)
         // Quit with "Keep my limit" left the Mac's limit on: take it back over instead of asking as if it were someone else's.
         leftOnCheck = d.bool(forKey: "leftOn"); d.removeObject(forKey: "leftOn")
         limiter = MCL().map(Limiter.init)
@@ -199,6 +205,9 @@ final class Keeper: ObservableObject {
         let sched = activeSchedule(settings.schedules, now: now, skipped: skipped)
         let top = sched.map { clampLimit($0.0.limit) } ?? limit
         if top != lastTop { resting = false; lastTop = top }  // a new top (schedule start or end): charge up to it first, as setLimit does
+        // A due calibration starts only after a step that held the limit on the charger, with nothing else running.
+        if calib == 0, wasHolding, runDown == nil, !fullOnce, sched == nil, b.external == true,
+           let due = nextCalibration(months: settings.calibEvery, last: settings.calibratedAt, since: settings.calibSince), now >= due { calib = 1 }
         if calib > 0 { calib = nextCalib(calib, level: b.current) ?? 0; if calib == 0 { settings.calibratedAt = now } }
         // Run down ends at its level, when unplugged, or when the lid closes (cutting power could put the Mac to sleep).
         if let t = runDown, b.current.map({ $0 <= t }) ?? false || b.external != true || lidClosed() { runDown = nil }
@@ -239,12 +248,14 @@ final class Keeper: ObservableObject {
             if notHolding(mode) { mac = l.current() }
         }
         let active = mode == .holding || mode == .fullOnce
+        wasHolding = mode == .holding
         // Both need Charge Keeper holding. A failed step keeps them (it may be a moment's hiccup; no cut is made meanwhile).
         if case .failed = mode {} else if !active { runDown = nil; calib = 0 }
         let want = active && b.current != nil && p.cut  // an unreadable level never switches the charger off
         let need = want || mode == .holding && top < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
         let note = steerCharger(need: need, want: want, deep: calib == 2)
-        if note == .oldHelper { calib = 0 }  // an old helper cannot run the battery down that far: end the cycle, the note says why
+        // An old helper cannot run the battery down that far, and with no helper the run down never starts: end the cycle.
+        if note == .oldHelper || calib == 2 && note == .noHelper { calib = 0 }
         steerLight(ledDark(settings.led, plugged: b.external == true, charging: b.charging == true))
         // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
         let paused = active && pausedAt != nil && (cutNow || b.external == true && level >= macFloor)

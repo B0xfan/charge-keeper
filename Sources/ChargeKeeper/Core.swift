@@ -11,11 +11,13 @@ struct LimitState: Equatable {
 }
 typealias Err = UnsafeMutablePointer<Unmanaged<AnyObject>?>?
 
+let mclSelectors = ["initWithClientName:", "isMCLSupported", "isMCLCurrentlyEnabled:", "getMCLLimitWithError:", "setMCLLimit:error:", "enableMCL:", "disableMCL:"]
 final class MCL {
     private let obj: AnyObject
     init?() {
         guard dlopen("/System/Library/PrivateFrameworks/PowerUI.framework/PowerUI", RTLD_NOW) != nil,
               let cls = NSClassFromString("PowerUISmartChargeClient"),
+              mclSelectors.allSatisfy({ class_respondsToSelector(cls, Selector(($0))) }),  // older macOS: no such method would crash the call
               let raw = class_createInstance(cls, 0) else { return nil }
         typealias Init = @convention(c) (AnyObject, Selector, NSString) -> Unmanaged<AnyObject>?
         let f = unsafeBitCast(class_getMethodImplementation(cls, Selector(("initWithClientName:"))), to: Init.self)

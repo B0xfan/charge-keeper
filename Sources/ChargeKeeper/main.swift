@@ -134,6 +134,11 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     expect(activeSchedule(both, now: d(17, 7, 30), skipped: [:], cal: cal)?.0.name == "Trip", "two running: the higher limit wins")
     expect(activeSchedule(both, now: d(17, 7, 30), skipped: [trip.id: d(18, 18)], cal: cal)?.0.name == "Weekdays", "skip this time leaves that occurrence out")
     expect(activeSchedule([wk], now: d(17, 7), skipped: [wk.id: d(16, 8)], cal: cal) != nil, "a skip covers only its own occurrence")
+    expect(toChip(powerOff, off: 0x01) == 0x01 && toChip(powerOn, off: 0x01) == 0x00 && fromChip(0x01, off: 0x01) == powerOff && fromChip(0x00, off: 0x01) == powerOn && fromChip(0x20, off: 0x01) == powerOff, "older Apple chips (CH0I/CH0J): off is 1")
+    expect(toChip(powerOff, off: 0x08) == 0x08 && fromChip(0x08, off: 0x08) == powerOff && toChip(ledOff, off: nil) == ledOff && fromChip(0x01, off: nil) == 0x01, "M2 (CHIE) and the MagSafe light unchanged")
+    expect(nextCalibration(months: 0, last: d(1, 9), since: nil, cal: cal) == nil && nextCalibration(months: 1, last: nil, since: nil, cal: cal) == nil, "no calibration schedule: never due")
+    expect(nextCalibration(months: 1, last: d(1, 9), since: nil, cal: cal) == cal.date(byAdding: .month, value: 1, to: d(1, 9)), "monthly: a month after the last run")
+    expect(nextCalibration(months: 2, last: d(1, 9), since: d(16, 9), cal: cal) == cal.date(byAdding: .month, value: 2, to: d(16, 9)), "set or cancelled later: counted from then")
     expect(nextCalib(1, level: 99) == 1 && nextCalib(1, level: 100) == 2 && nextCalib(2, level: 16) == 2 && nextCalib(2, level: calibFloor) == 3
            && nextCalib(3, level: 100) == nil && nextCalib(2, level: nil) == 2, "calibration: full, down to 15, full, done")
     expect(ledDark(.offWhileHeld, plugged: true, charging: false) && !ledDark(.offWhileHeld, plugged: true, charging: true) && ledDark(.off, plugged: true, charging: true)
@@ -267,6 +272,7 @@ case "--probe":
     let st = m.state()
     print("mcl: supported=\(m.supported) enabled=\(st.map { "\($0.enabled)" } ?? "?") limit=\(st.map { "\($0.limit)" } ?? "?")")
     let bt = battery()
+    print("charger switch: \(chargerSwitch()?.key ?? "none found")  magsafe light: \(SMCSwitch(key: "ACLC") != nil)")
     print("battery: level=\(bt.current.map(String.init) ?? "?") temperature=\(bt.tempF.map(degrees) ?? "?")")
 case "--restore":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(2) }
