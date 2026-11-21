@@ -91,7 +91,7 @@ struct SettingsView: View {
                 }
             }.formStyle(.grouped)
         }
-        .padding(.top, 8).frame(width: 460, height: 520)  // fixed: every tab fits, so the window keeps one size
+        .padding(.top, 8).frame(width: 460, height: 650)  // fixed: every tab fits, so the window keeps one size
         .sheet(item: $editing) { x in
             ScheduleEditor(draft: x, isNew: !s.schedules.contains { $0.id == x.id },
                            save: { new in change { st in if let i = st.schedules.firstIndex(where: { $0.id == new.id }) { st.schedules[i] = new } else { st.schedules.append(new) } }; editing = nil },
