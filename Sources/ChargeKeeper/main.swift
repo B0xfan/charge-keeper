@@ -223,6 +223,7 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     c = Carry(); _ = auto(&c, 94); expect(!auto(&c, 92, sched: 100).cut && c.runDown == nil, "auto run down: a schedule starting ends it")
     c = Carry(); _ = auto(&c, 94); expect(!auto(&c, 92, macCal: true).cut && c.runDown == nil, "auto run down: macOS charging to full ends it")
     c = Carry(); _ = auto(&c, 94); expect(auto(&c, 92, limit: 90).cut && c.runDown == 90, "auto run down: a new limit restarts it to that limit")
+    c = Carry(); _ = auto(&c, 94); expect(!step(&c, 92).plan.cut && c.runDown == nil, "auto run down: switching it off ends it")
     c = Carry(runDown: 80); expect(auto(&c, 92, sched: 100).cut && c.runDown == 80, "a run down started by hand is left to the user")
     expect(statusText(Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80, autoRun: true)) == "On battery, down to 80%", "auto run down status")
     var r = Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)

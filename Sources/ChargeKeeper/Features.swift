@@ -91,8 +91,8 @@ func decide(_ c: inout Carry, level: Int?, external: Bool?, tempF: Double?, sche
     if c.calib == 0, calibDue, c.runDown == nil, !c.fullOnce, scheduled == nil, external == true { c.calib = 1 }
     var done = false
     if c.calib > 0 { c.calib = nextCalib(c.calib, level: level) ?? 0; done = c.calib == 0 }
-    // An automatic run down ends once it would no longer start: a schedule or macOS's own charge to full has taken over, or the limit moved.
-    if c.autoRun, scheduled != nil || macCal || c.runDown != top { c.runDown = nil }
+    // An automatic run down ends once it would no longer start: its switch is off, a schedule or macOS's own charge to full has taken over, or the limit moved.
+    if c.autoRun, !autoRunDown || scheduled != nil || macCal || c.runDown != top { c.runDown = nil }
     // Run down ends at its level, when unplugged, or when the lid closes (cutting power could put the Mac to sleep).
     if let t = c.runDown, level.map({ $0 <= t }) ?? false || external != true || lid() { c.runDown = nil }
     let filling = c.fullOnce || c.calib == 1 || c.calib == 3
