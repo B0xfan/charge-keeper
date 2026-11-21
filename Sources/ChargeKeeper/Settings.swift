@@ -5,14 +5,16 @@ import ServiceManagement
 struct SettingsHost: View {
     @ObservedObject var keeper: Keeper
     @State private var login = SMAppService.mainApp.status
+    @State private var loginRefused = false
     var body: some View {
         SettingsView(s: keeper.snap.settings, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
                      login: login, setLogin: { on in
                          UserDefaults.standard.set(true, forKey: "loginItemAsked")  // the user's own choice: never re-added at launch
                          try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
                          login = SMAppService.mainApp.status
-                     })
-            .onAppear { login = SMAppService.mainApp.status }  // the window is reused; System Settings may have changed it meanwhile
+                         loginRefused = on ? !(login == .enabled || login == .requiresApproval) : login == .enabled  // waiting for approval is not a refusal
+                     }, loginRefused: loginRefused)
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in login = SMAppService.mainApp.status; loginRefused = false }  // the window is reused (onAppear runs once); System Settings may have changed it meanwhile
     }
 }
 
@@ -39,6 +41,7 @@ struct SettingsView: View {
     var canCalibrate = true
     var login = SMAppService.Status.notRegistered
     var setLogin: (Bool) -> Void = { _ in }
+    var loginRefused = false
     @State var tab = SettingsTab.general
     @State private var editing: Schedule?
 
@@ -55,7 +58,7 @@ struct SettingsView: View {
                     Section {
                         Toggle(isOn: Binding(get: { login == .enabled || login == .requiresApproval }, set: setLogin)) {
                             Text("Start at login")
-                            Text(login == .requiresApproval ? "Waiting for your OK in System Settings, General, Login Items." : "Opens Charge Keeper when you log in to your Mac.")
+                            Text(loginRefused ? "macOS did not take the change. Try System Settings, General, Login Items." : login == .requiresApproval ? "Waiting for your OK in System Settings, General, Login Items." : "Opens Charge Keeper when you log in to your Mac.")
                         }
                     }
                     quitSection
@@ -78,7 +81,7 @@ struct SettingsView: View {
             Section("Schedules") {
                 ForEach(s.schedules) { x in
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) { Text(x.name).bold(); Text(scheduleLine(x)).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 2) { Text(x.name); Text(scheduleLine(x)).font(.caption).foregroundStyle(.secondary) }
                         Spacer()
                         Button("Edit") { editing = x }.buttonStyle(.link).accessibilityLabel("Edit \(x.name)")
                         Toggle(x.name, isOn: Binding(get: { x.on }, set: { on in change { st in if let i = st.schedules.firstIndex(where: { $0.id == x.id }) { st.schedules[i].on = on } } }))
@@ -106,7 +109,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var quitSection: some View {
-            Section("When Charge Keeper quits") {
+            Section("When Charge Keeper Quits") {
                 Picker("When Charge Keeper quits", selection: Binding(get: { s.keepOnQuit }, set: { v in change { $0.keepOnQuit = v } })) {
                     Text("Charging goes back to normal").tag(false)
                     Text("Keep my limit").tag(true)
@@ -117,7 +120,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var careSection: some View {
-            Section("Battery care") {
+            Section("Battery Care") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Calibration cycle")
@@ -141,7 +144,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var linksSection: some View {
-            Section("Shortcuts and links") {
+            Section("Shortcuts and Links") {
                 Text("These links work in the Shortcuts app (its Open URLs action), in scripts or as a bookmark. Siri runs a shortcut by its name.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 ForEach(linkExamples, id: \.self) { l in
@@ -156,6 +159,7 @@ func repeatKind(_ d: Set<Int>) -> RepeatKind { d.isEmpty ? .once : d == everyDay
 
 struct ScheduleEditor: View {
     @State var draft: Schedule
+    @State private var askDelete = false
     let isNew: Bool
     let save: (Schedule) -> Void, delete: (UUID) -> Void, cancel: () -> Void
     @State private var kind: RepeatKind
@@ -194,7 +198,8 @@ struct ScheduleEditor: View {
             Text(kind == .once ? "A Once schedule turns itself off when it ends." : "An end time before the start time runs past midnight.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                if !isNew { Button("Delete", role: .destructive) { delete(draft.id) } }
+                if !isNew { Button("Delete", role: .destructive) { askDelete = true }
+                    .confirmationDialog("Delete \"\(draft.name)\"?", isPresented: $askDelete) { Button("Delete", role: .destructive) { delete(draft.id) } } }
                 Spacer()
                 Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
                 Button(isNew ? "Add" : "Save") {

@@ -91,6 +91,11 @@ func isCharging(_ s: Snapshot) -> Bool {
 let stillSweep = 0.5  // Reduce Motion: a still picture of "charging"
 func iconFill(_ sweep: Double) -> Double { 0.07 + 0.93 * sweep }  // the icon starts as a sliver, never empty
 
+// The charger cut, as pure rules (the only path that can leave power off). Only a holding or charge-to-full step with a
+// readable level may want a cut; a failed step or an unreadable level gives power back. AlDente or a closed lid: never cut.
+func wantsCut(mode: Mode, level: Int?, planCut: Bool) -> Bool { (mode == .holding || mode == .fullOnce) && level != nil && planCut }
+func cutsNow(want: Bool, aldente: Bool, lid: Bool) -> Bool { want && !aldente && !lid }
+
 // Start with the Mac, once, and only for the copy in /Applications (a build folder copy must not become a login item).
 // If the user switches it off in System Settings it stays off: the question is asked a single time.
 func shouldRegisterLoginItem(path: String, asked: Bool) -> Bool { !asked && path.hasPrefix("/Applications/") }

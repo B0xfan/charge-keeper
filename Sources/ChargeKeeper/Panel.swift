@@ -9,7 +9,7 @@ struct PanelHost: View {
                                                           full: keeper.chargeToFullOnce, back: keeper.backToLimit, choose: keeper.choose, quit: keeper.quit,
                                                           runDown: keeper.startRunDown, stopRunDown: keeper.stopRunDown, cancelCalibration: keeper.cancelCalibration,
                                                           skip: keeper.skipSchedule, lowPower: keeper.setLowPower, settings: openSettings,
-                                                          installHelper: keeper.installHelper), helperBusy: keeper.helperBusy)
+                                                          installHelper: keeper.installHelper), helperBusy: keeper.helperBusy, helperFailed: keeper.helperFailed)
     }
 }
 
@@ -36,10 +36,11 @@ struct Panel: View {
     var bar = 0.0  // how much of the lighter "still to charge" stretch is drawn, 0...1
     let act: PanelActions
     var helperBusy = false  // the helper install's password box is open
+    var helperFailed = false
     @State private var draft: Double
     @State private var draftBottom: Double
-    init(s: Snapshot, bar: Double = 0, act: PanelActions = PanelActions(), helperBusy: Bool = false) {
-        self.s = s; self.bar = bar; self.act = act; self.helperBusy = helperBusy
+    init(s: Snapshot, bar: Double = 0, act: PanelActions = PanelActions(), helperBusy: Bool = false, helperFailed: Bool = false) {
+        self.s = s; self.bar = bar; self.act = act; self.helperBusy = helperBusy; self.helperFailed = helperFailed
         _draft = State(initialValue: Double(s.limit)); _draftBottom = State(initialValue: Double(s.bottom))
     }
 
@@ -157,9 +158,10 @@ struct Panel: View {
         Note(cutNoteText(n))
         if n == .noHelper || n == .oldHelper { helperButton(update: n == .oldHelper) }
     }
-    private func helperButton(update: Bool) -> some View {
+    @ViewBuilder private func helperButton(update: Bool) -> some View {
         Button { act.installHelper() } label: { Text(helperBusy ? "Waiting for Your Password…" : update ? "Update Charger Helper…" : "Install Charger Helper…").frame(maxWidth: .infinity) }
             .disabled(helperBusy).help("Asks for your Mac password once")
+        if helperFailed { Text("That did not work. Check that Charge Keeper is in Applications, then try again.").font(.caption).foregroundStyle(.secondary) }
     }
 }
 

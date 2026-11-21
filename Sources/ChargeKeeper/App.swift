@@ -44,9 +44,9 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
             w.title = "Charge Keeper Settings"
             w.styleMask = [.titled, .closable]  // fixed size: every section fits
             w.isReleasedWhenClosed = false
+            w.center()  // first time only: later it reopens where the user left it
             settingsWindow = w
         }
-        settingsWindow?.center()
         settingsWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -73,11 +73,24 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
     func popoverDidClose(_ notification: Notification) { keeper.panel(open: false) }
 }
 
+// Never shown (accessory app), but its key equivalents make Cmd-C/V/X/A/Z work in text fields and Cmd-W close Settings.
+private func keyMenu() -> NSMenu {
+    let main = NSMenu()
+    for (title, items) in [("Edit", [("Undo", "undo:", "z"), ("Redo", "redo:", "Z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")]),
+                           ("Window", [("Close", "performClose:", "w")])] {
+        let m = NSMenu(title: title)
+        for (t, a, k) in items { m.addItem(withTitle: t, action: Selector(a), keyEquivalent: k) }
+        main.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = m
+    }
+    return main
+}
+
 func runApp() -> Never {
     let app = NSApplication.shared
     let controller = StatusController()
     app.delegate = controller
     app.setActivationPolicy(.accessory)
+    app.mainMenu = keyMenu()
     withExtendedLifetime(controller) { app.run() }
     exit(0)
 }

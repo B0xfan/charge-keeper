@@ -145,7 +145,7 @@ final class Keeper: ObservableObject {
         wasHolding = mode == .holding
         // Both need Charge Keeper holding. A failed step keeps them (it may be a moment's hiccup; no cut is made meanwhile).
         if case .failed = mode {} else if !active { c.runDown = nil; c.calib = 0 }
-        let want = active && b.current != nil && p.cut  // an unreadable level never switches the charger off
+        let want = wantsCut(mode: mode, level: b.current, planCut: p.cut)
         let need = want || mode == .holding && top < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
         let note = steerCharger(need: need, want: want, deep: c.calib == 2)
         // An old helper cannot run the battery down that far, and with no helper the run down never starts: end the cycle.
@@ -176,7 +176,7 @@ final class Keeper: ObservableObject {
         let aldente = need && self.aldente
         guard need || cutNow else { return nil }
         let lid = need && lidClosed()  // cutting power can put a Mac with an outside screen to sleep
-        let w = want && !aldente && !lid
+        let w = cutsNow(want: want, aldente: aldente, lid: lid)
         let r = charger.send(byte: w ? (deep ? cmdDeep : cmdCut) : cmdOn)
         if w && deep && r == replyOn { helperOld = true; cutNow = false; charger.disconnect(); return .oldHelper }  // an old helper reads "d" as power on
         cutNow = r == replyCut
@@ -218,7 +218,7 @@ final class Keeper: ObservableObject {
         }
     }
 
-    func panel(open: Bool) { panelOpen = open; if open { bar = anim } }
+    func panel(open: Bool) { panelOpen = open; if open { bar = anim } else { helperFailed = false } }
     func setLimit(_ v: Int) {
         work.async {
             let new = clampLimit(v)
@@ -270,9 +270,11 @@ final class Keeper: ObservableObject {
     // The panel's Install/Update Charger Helper button: runs the bundled install script (macOS asks for the Mac password once).
     // Off the screen thread, as the password box waits for the user. A fresh helper understands every command again.
     @Published private(set) var helperBusy = false
+    @Published private(set) var helperFailed = false  // the last install did not finish (cancelled password box included)
     func installHelper() {
-        guard !helperBusy, let script = Bundle.main.path(forResource: "install-helper", ofType: "sh") else { return }
-        helperBusy = true
+        guard !helperBusy else { return }
+        guard let script = Bundle.main.path(forResource: "install-helper", ofType: "sh") else { helperFailed = true; return }
+        helperBusy = true; helperFailed = false
         DispatchQueue.global(qos: .userInitiated).async {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -284,7 +286,7 @@ final class Keeper: ObservableObject {
                     self.charger.disconnect(); self.ledLine.disconnect()
                 }
                 self.step()
-                DispatchQueue.main.async { self.helperBusy = false }
+                DispatchQueue.main.async { self.helperBusy = false; self.helperFailed = !ok }
             }
         }
     }
