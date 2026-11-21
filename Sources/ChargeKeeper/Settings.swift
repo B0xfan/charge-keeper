@@ -18,9 +18,17 @@ struct SettingsHost: View {
     }
 }
 
-enum SettingsTab: Hashable { case general, schedules, care, links }
+enum SettingsTab: Hashable { case general, schedules, care, look, links }
 
 func limitText(_ v: Int) -> String { "\(v)%" }
+func iconStyleName(_ s: IconStyle) -> String {
+    switch s {
+    case .numberInBattery: return "Number in battery (today)"
+    case .battery: return "Battery only"
+    case .batteryAndNumber: return "Battery and number"
+    case .number: return "Number only"
+    }
+}
 func repeatText(_ d: Set<Int>) -> String {
     switch d {
     case []: return "once"
@@ -50,7 +58,7 @@ struct SettingsView: View {
             // A segmented switch rather than a TabView: same look, and it draws in the off-screen pictures too.
             Picker("Section", selection: $tab) {
                 Text("General").tag(SettingsTab.general); Text("Schedules").tag(SettingsTab.schedules)
-                Text("Battery Care").tag(SettingsTab.care); Text("Links").tag(SettingsTab.links)
+                Text("Battery Care").tag(SettingsTab.care); Text("Look").tag(SettingsTab.look); Text("Shortcuts").tag(SettingsTab.links)
             }.pickerStyle(.segmented).labelsHidden().fixedSize()
             Form {
                 switch tab {
@@ -72,11 +80,12 @@ struct SettingsView: View {
                     quitSection
                 case .schedules: schedulesSection
                 case .care: careSection
+                case .look: lookSection
                 case .links: linksSection
                 }
             }.formStyle(.grouped)
         }
-        .padding(.top, 8).frame(width: 460, height: 400)  // fixed: every tab fits, so the window keeps one size
+        .padding(.top, 8).frame(width: 460, height: 520)  // fixed: every tab fits, so the window keeps one size
         .sheet(item: $editing) { x in
             ScheduleEditor(draft: x, isNew: !s.schedules.contains { $0.id == x.id },
                            save: { new in change { st in if let i = st.schedules.firstIndex(where: { $0.id == new.id }) { st.schedules[i] = new } else { st.schedules.append(new) } }; editing = nil },
@@ -149,6 +158,41 @@ struct SettingsView: View {
                     }
                 }
             }
+    }
+
+    // Mockup v4, Look.
+    @ViewBuilder private var lookSection: some View {
+        let look = Binding(get: { s.look }, set: { v in change { $0.look = v } })
+        Section("Menu bar icon") {
+            HStack(spacing: 8) {
+                ForEach(IconStyle.allCases, id: \.self) { style in
+                    let on = s.look.icon == style
+                    Button { look.wrappedValue.icon = style } label: {
+                        VStack(spacing: 6) {
+                            Image(nsImage: makeIcon(style, level: 80)).renderingMode(.template).frame(height: 15)
+                            Text(iconStyleName(style)).font(.caption).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 56).padding(.vertical, 6).contentShape(Rectangle())
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(on ? Color.accentColor : Color.primary.opacity(0.2), lineWidth: on ? 2 : 1))
+                    }
+                    .buttonStyle(.plain).accessibilityLabel(iconStyleName(style)).accessibilityAddTraits(on ? .isSelected : [])
+                }
+            }
+            Toggle(isOn: look.sweep) {
+                Text("Charging animation")
+                Text("The green sweep while charging. Off: a still picture.")
+            }
+        }
+        Section("Show in the panel") {
+            Toggle("Charge to Full Once button", isOn: look.full).toggleStyle(.checkbox)
+            Toggle("Run Down button (when above the limit)", isOn: look.runDown).toggleStyle(.checkbox)
+            Toggle("Heat pause switch", isOn: look.heat).toggleStyle(.checkbox)
+            Toggle("Sailing range switch", isOn: look.sailing).toggleStyle(.checkbox)
+            Toggle("Low Power Mode switch", isOn: look.lowPower).toggleStyle(.checkbox)
+            Text("Hidden ones keep working; you change them here instead. The level, the limit slider and warnings always show.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder private var linksSection: some View {

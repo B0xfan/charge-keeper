@@ -41,6 +41,14 @@ struct KeeperSettings: Equatable {
     var calibEvery = 0  // months; 0 = no calibration schedule
     var calibSince: Date? = nil  // when the calibration schedule was set or a scheduled run was cancelled
     var autoRunDown = false  // mockup v4: "Run down to my limit by itself"
+    var look = Look()
+}
+
+// Mockup v4, Settings > Look: the menu-bar icon and which buttons and switches the panel shows. Hidden ones keep working.
+struct Look: Codable, Equatable {
+    var icon = IconStyle.numberInBattery
+    var sweep = true  // "Charging animation"
+    var full = true, runDown = true, heat = true, sailing = true, lowPower = true
 }
 
 enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed, oldHelper }

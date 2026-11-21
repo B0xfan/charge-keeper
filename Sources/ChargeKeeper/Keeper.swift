@@ -44,7 +44,7 @@ final class Keeper: ObservableObject {
             d.set(settings.keepOnQuit, forKey: "keepOnQuit"); d.set(settings.led.rawValue, forKey: "magsafeLight")
             d.set(settings.calibratedAt, forKey: "calibratedAt")
             d.set(settings.calibEvery, forKey: "calibEvery"); d.set(settings.calibSince, forKey: "calibSince")
-            d.set(settings.autoRunDown, forKey: "autoRunDown")
+            d.set(settings.autoRunDown, forKey: "autoRunDown"); d.set(try? JSONEncoder().encode(settings.look), forKey: "look")
         }
     }
     private let ledLine = ChargerClient(path: helperSocket)  // kept open while the light is dark: its closing gives the light back
@@ -67,7 +67,8 @@ final class Keeper: ObservableObject {
                             keepOnQuit: d.bool(forKey: "keepOnQuit"), led: LedMode(rawValue: d.integer(forKey: "magsafeLight")) ?? .normal,
                             calibratedAt: d.object(forKey: "calibratedAt") as? Date,
                             calibEvery: d.integer(forKey: "calibEvery"), calibSince: d.object(forKey: "calibSince") as? Date,
-                            autoRunDown: d.bool(forKey: "autoRunDown"))
+                            autoRunDown: d.bool(forKey: "autoRunDown"),
+                            look: d.data(forKey: "look").flatMap { try? JSONDecoder().decode(Look.self, from: $0) } ?? Look())
         // Quit with "Keep my limit" left the Mac's limit on: take it back over instead of asking as if it were someone else's.
         leftOnCheck = d.bool(forKey: "leftOn"); d.removeObject(forKey: "leftOn")
         limiter = MCL().map(Limiter.init)
@@ -205,9 +206,11 @@ final class Keeper: ObservableObject {
     }
 
     // Main thread. The timer runs only while charging with a screen awake; any other state stops it and shows today's plain icon.
+    // Only the number-in-battery icon has the sweep; the other styles, and the Look tab's switch off, show a still picture.
     private func refreshAnimation() {
         let charging = isCharging(snap)
-        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let look = snap.settings.look
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || !look.sweep || look.icon != .numberInBattery
         if charging && !reduced && !screensAsleep {
             guard animTimer == nil else { return }
             let t = Timer(timeInterval: 1 / sweepFPS, repeats: true) { [weak self] _ in

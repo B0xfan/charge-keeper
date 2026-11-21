@@ -31,7 +31,8 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
     // Charging: the coloured picture, toned for the bar's real look at draw time (it can differ from the app's). Otherwise the template icon.
     private func updateIcon() {
         let s = keeper.snap
-        item.button?.image = isCharging(s) ? liveChargingIcon(level: s.level, fill: iconFill(keeper.anim)) : makeBattery(level: s.level)
+        let style = s.settings.look.icon
+        item.button?.image = isCharging(s) ? liveChargingIcon(style, level: s.level, fill: iconFill(keeper.anim)) : makeIcon(style, level: s.level)
         item.button?.setAccessibilityValue("\(s.level)%, \(statusText(s))")  // VoiceOver reads the level, not just the name
     }
 

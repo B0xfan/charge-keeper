@@ -126,10 +126,10 @@ struct Panel: View {
                     }
                 }
                 if let n = s.cutNote { cutNote(n) }
-                if s.mode == .holding && s.plugged && s.level > holdLevel(s) && !s.cut && !s.calibrating {
+                if s.settings.look.runDown && s.mode == .holding && s.plugged && s.level > holdLevel(s) && !s.cut && !s.calibrating {
                     Button { act.runDown() } label: { Text("Run Down to \(s.limit)% on Battery").frame(maxWidth: .infinity) }
                 }
-                Button { act.full() } label: { Text("Charge to Full Once").frame(maxWidth: .infinity) }
+                if s.settings.look.full { Button { act.full() } label: { Text("Charge to Full Once").frame(maxWidth: .infinity) } }
                 switches
             }
             }
@@ -147,14 +147,22 @@ struct Panel: View {
     }
 
     // Mockup v2: the two switches under the buttons, each with a small line that says what it does right now.
+    // Mockup v4: each can be hidden under Settings > Look.
     @ViewBuilder private var switches: some View {
-        Divider()
-        Setting(title: "Heat pause", hint: s.heatOn ? "Pauses above \(degrees(heatPauseF)).\(s.tempF.map { " Battery now \(degrees($0))." } ?? "")" : "Stop charging while the battery is warm.",
-                on: s.heatOn, set: act.heat)
-        Setting(title: "Sailing range", hint: s.sailing ? "Charges up to \(s.limit)%, then waits until \(s.bottom)%." : "Let the battery drift down a little before charging again.",
-                on: s.sailing, set: act.sailing)
-        Setting(title: "Low Power Mode", hint: s.helperOld ? "Needs the charger helper updated." : "The Mac's own energy saver. \(s.lowPower ? "On" : "Off") now.",
-                on: s.lowPower, set: act.lowPower)
+        let look = s.settings.look
+        if look.heat || look.sailing || look.lowPower { Divider() }
+        if look.heat {
+            Setting(title: "Heat pause", hint: s.heatOn ? "Pauses above \(degrees(heatPauseF)).\(s.tempF.map { " Battery now \(degrees($0))." } ?? "")" : "Stop charging while the battery is warm.",
+                    on: s.heatOn, set: act.heat)
+        }
+        if look.sailing {
+            Setting(title: "Sailing range", hint: s.sailing ? "Charges up to \(s.limit)%, then waits until \(s.bottom)%." : "Let the battery drift down a little before charging again.",
+                    on: s.sailing, set: act.sailing)
+        }
+        if look.lowPower {
+            Setting(title: "Low Power Mode", hint: s.helperOld ? "Needs the charger helper updated." : "The Mac's own energy saver. \(s.lowPower ? "On" : "Off") now.",
+                    on: s.lowPower, set: act.lowPower)
+        }
         if s.helperOld && s.cutNote != .oldHelper { helperButton(update: true) }
     }
 

@@ -54,6 +54,7 @@ private struct Stage: View {
         // Mockup v3, panels 1 to 4.
         ("v3-1-above-limit", Snapshot(level: 94, plugged: true, charging: false, limit: 80, mode: .holding)),
         ("v4-auto-running-down", Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80, autoRun: true)),
+        ("v4-look-two-hidden", { var x = Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding); x.settings.look.runDown = false; x.settings.look.sailing = false; x.settings.look.lowPower = false; return x }()),
         ("v3-2-running-down", Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)),
         ("v3-3-calibrating", Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)),
         ("v3-4-schedule", Snapshot(level: 93, plugged: true, charging: true, limit: 100, mode: .holding, scheduled: Scheduled(name: "Trip", until: Date().addingTimeInterval(30 * 3600), back: 80))),
@@ -74,7 +75,7 @@ private struct Stage: View {
     let wk = Schedule(name: "Weekdays", limit: 90, on: false, days: weekdays, from: start.addingTimeInterval(-3600), until: start.addingTimeInterval(3600))
     for dark in [false, true] {
         let tone = dark ? "dark" : "light"
-        for (name, tab) in [("general", SettingsTab.general), ("schedules", .schedules), ("care", .care), ("links", .links)] {
+        for (name, tab) in [("general", SettingsTab.general), ("schedules", .schedules), ("care", .care), ("look", .look), ("links", .links)] {
             ok = save(SettingsView(s: KeeperSettings(schedules: [trip, wk], calibratedAt: start.addingTimeInterval(-20 * 86_400), calibEvery: 1), login: .enabled, tab: tab).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(name)-\(tone).png") && ok
         }
         ok = save(ScheduleEditor(draft: trip, isNew: false, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-edit-\(tone).png") && ok
@@ -85,6 +86,10 @@ private struct Stage: View {
         let tone = dark ? "dark" : "light"
         for (name, lv) in [("9", 9), ("54-on-battery", 54), ("62", 62), ("80-holding", 80), ("100", 100)] {
             ok = saveIcon(makeBattery(level: lv), dark: dark, to: "\(dir)/icon-\(name)-\(tone).png") && ok
+        }
+        for style in IconStyle.allCases {  // mockup v4 Look: every style, held and charging
+            ok = saveIcon(makeIcon(style, level: 80), dark: dark, to: "\(dir)/icon-style\(style.rawValue)-80-\(tone).png") && ok
+            ok = saveIcon(chargingIcon(style, level: 62, fill: 1, dark: dark), dark: dark, to: "\(dir)/icon-style\(style.rawValue)-62-charging-\(tone).png") && ok
         }
         for (name, f) in [("sliver", iconFill(0)), ("mid", 0.5), ("full", 1.0), ("reduce-motion", iconFill(stillSweep))] {
             ok = saveIcon(chargingIcon(level: 62, fill: f, dark: dark), dark: dark, to: "\(dir)/icon-charging-\(name)-\(tone).png") && ok
@@ -153,12 +158,13 @@ private struct Stage: View {
 }
 
 @MainActor private func saveIcon(_ icon: NSImage, dark: Bool, scale k: Int = 8, to path: String) -> Bool {
-    let w = 300 * k / 8, h = 150 * k / 8  // k = 8: the 300 x 150 canvas of the approved pictures
+    let iw = Int(icon.size.width)  // 30 for the battery icons; the text styles are wider
+    let w = iw * 10 * k / 8, h = 150 * k / 8  // k = 8: the 300 x 150 canvas of the approved pictures
     func newRep() -> NSBitmapImageRep? {
         NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
     }
     guard let mask = newRep(), let mctx = NSGraphicsContext(bitmapImageRep: mask) else { return false }
-    let box = NSRect(x: 30 * k / 8, y: 15 * k / 8, width: 30 * k, height: 15 * k)  // the 30 x 15 icon, k times larger
+    let box = NSRect(x: iw * k / 8, y: 15 * k / 8, width: iw * k, height: 15 * k)  // the icon, k times larger
     let all = NSRect(x: 0, y: 0, width: w, height: h)
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = mctx
