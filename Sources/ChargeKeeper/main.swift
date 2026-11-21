@@ -1,7 +1,7 @@
 // Entry. No argument (or only arguments macOS adds, not starting with --) = the menu-bar app. The flags below are for the safety watchdog, emergencies and checks.
 //   --restore    put the Mac's charge limit back to off / 100 (also works if the app is not running)
 //   --probe      read-only: is the limit supported, on or off, which level
-//   --selftest   pure logic checks, no hardware
+//   --selftest   logic checks plus one end-to-end run on a fake helper (--test-client <socket> is its stand-in app); no hardware
 //   --render <folder>   draw the panel and icon to PNG files off-screen (no window, no charge-limit access)
 //   --helper <uid>      the charger helper, run as root by launchd (see Charger.swift); --helper-fake <folder> runs it without root on a file
 import Foundation
@@ -118,6 +118,34 @@ func helperSelftest(_ expect: (Bool, String) -> Void) {
     withExtendedLifetime((server, other)) {}
 }
 
+// End to end: the real helper (--helper-fake, its own process) and a stand-in app (its own process) that cuts charger power
+// and is then killed hard. The helper must put power back once the app's connection drops.
+func endToEndSelftest(_ expect: (Bool, String) -> Void) {
+    let dir = NSTemporaryDirectory() + "keeper-e2e-\(getpid())"
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    func waitFor(_ ok: () -> Bool) -> Bool { for _ in 0..<50 { if ok() { return true }; usleep(100_000) }; return false }
+    let devnull = open("/dev/null", O_WRONLY)
+    defer { close(devnull) }
+    guard let helper = spawnDetached([selfPath(), "--helper-fake", dir], stdoutFd: devnull) else { return expect(false, "e2e: helper starts") }
+    defer { kill(helper, SIGKILL); waitpid(helper, nil, 0) }
+    let sw = FileSwitch(dir + "/switch")
+    guard waitFor({ FileManager.default.fileExists(atPath: dir + "/helper.sock") }) else { return expect(false, "e2e: helper socket appears") }
+    var fds: [Int32] = [0, 0]
+    guard pipe(&fds) == 0 else { return expect(false, "e2e: pipe") }
+    let app = spawnDetached([selfPath(), "--test-client", dir + "/helper.sock"], stdoutFd: fds[1])
+    close(fds[1])
+    var reply: UInt8 = 0
+    var pfd = pollfd(fd: fds[0], events: Int16(POLLIN), revents: 0)
+    // the stand-in writes the helper's answer; EOF if it died first. Timed, as the helper install runs this self-test.
+    let got = app != nil && poll(&pfd, 1, 5000) == 1 && read(fds[0], &reply, 1) == 1
+    close(fds[0])
+    guard let app else { return expect(false, "e2e: stand-in app starts") }
+    expect(got && reply == replyCut && sw.read() == powerOff, "e2e: the app process cut charger power")
+    kill(app, SIGKILL); waitpid(app, nil, 0)
+    expect(waitFor { sw.read() == powerOn }, "e2e: app killed hard: the helper puts charger power back")
+}
+
 func featureSelftest(_ expect: (Bool, String) -> Void) {
     var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
     func d(_ day: Int, _ h: Int, _ m: Int = 0) -> Date { cal.date(from: DateComponents(year: 2026, month: 11, day: day, hour: h, minute: m))! }  // Nov 16 2026 is a Monday
@@ -146,6 +174,30 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     expect(linkAction(URL(string: "chargekeeper://limit/80")!) == .limit(80) && linkAction(URL(string: "chargekeeper://full")!) == .full
            && linkAction(URL(string: "ChargeKeeper://rundown")!) == .runDown && linkAction(URL(string: "chargekeeper://limit/30")!) == nil
            && linkAction(URL(string: "chargekeeper://limit/abc")!) == nil && linkAction(URL(string: "https://limit/80")!) == nil, "links")
+    expect(linkAction(URL(string: "chargekeeper://heat/on")!) == .heat(true) && linkAction(URL(string: "chargekeeper://sailing/OFF")!) == .sailing(false)
+           && linkAction(URL(string: "chargekeeper://lowpower/on")!) == .lowPower(true) && linkAction(URL(string: "chargekeeper://calibration/off")!) == .calibration(false)
+           && linkAction(URL(string: "chargekeeper://heat")!) == nil && linkAction(URL(string: "chargekeeper://heat/maybe")!) == nil, "links for every switch")
+    expect(linkExamples.allSatisfy { linkAction(URL(string: $0)!) != nil }, "every link shown in Settings works")
+    // One step's decision (decide), the part of the work queue's step that has no hardware in it.
+    func step(_ c: inout Carry, _ level: Int?, plugged: Bool? = true, sched: Int? = nil, limit: Int = 80, due: Bool = false, lid: Bool = false) -> (top: Int, plan: Plan, filling: Bool, calibDone: Bool) {
+        decide(&c, level: level, external: plugged, tempF: nil, scheduled: sched, limit: limit, sailing: false, bottom: 75, heat: false, calibDue: due, lid: lid)
+    }
+    var c = Carry(fullOnce: true)
+    expect(step(&c, 99).filling && c.fullOnce && step(&c, 100).plan == Plan(mac: 80, cut: false) && !c.fullOnce, "decide: charge to full once ends at 100%")
+    c = Carry(); c.resting = true; c.lastTop = 80
+    expect(step(&c, 85, sched: 100).top == 100 && !c.resting && c.lastTop == 100, "decide: a schedule's limit wins and charges up to it first")
+    c = Carry()
+    _ = step(&c, 80, sched: 90, due: true); expect(c.calib == 0, "decide: a due calibration waits while a schedule runs")
+    _ = step(&c, 80, plugged: false, due: true); expect(c.calib == 0, "decide: a due calibration waits for the charger")
+    _ = step(&c, 80, due: true); expect(c.calib == 1, "decide: a due calibration starts on the charger")
+    _ = step(&c, 100); expect(c.calib == 2 && step(&c, 50).plan.cut, "decide: calibration step 2 runs on battery")
+    _ = step(&c, calibFloor); let fin = step(&c, 100); expect(c.calib == 0 && fin.calibDone, "decide: calibration finishes")
+    c = Carry(runDown: 80)
+    expect(step(&c, 90).plan.cut && c.runDown == 80, "decide: run down cuts power")
+    expect(!step(&c, 90, lid: true).plan.cut && c.runDown == nil, "decide: run down ends when the lid closes")
+    c = Carry(runDown: 80); _ = step(&c, 90, plugged: false); expect(c.runDown == nil, "decide: run down ends when unplugged")
+    c = Carry(runDown: 80); _ = step(&c, 80); expect(c.runDown == nil, "decide: run down ends at its level")
+    c = Carry(resting: true, pausedAt: 70, lastTop: 80); _ = step(&c, nil); expect(c.resting && c.pausedAt == 70, "decide: an unreadable level changes neither state")
     var r = Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)
     expect(statusText(r) == "On battery, down to 80%" && !isCharging(r), "run down status")
     r = Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)
@@ -257,6 +309,7 @@ func selftest() -> Int32 {
     expect(statusText(t) == "Charging to 80%" && isCharging(t), "no helper: the Mac's 80 holds and the text says so")
     featureSelftest(expect)
     helperSelftest(expect)
+    endToEndSelftest(expect)
     print(bad == 0 ? "selftest ok" : "selftest FAILED")
     return bad == 0 ? 0 : 1
 }
@@ -266,6 +319,12 @@ switch args.dropFirst().first {
 case "--watchdog": runWatchdog(args)
 case "--helper", "--helper-fake": runHelper(args)
 case "--selftest": exit(selftest())
+case "--test-client":  // the self-test's stand-in app: cut power through the helper at <socket>, report the answer, wait to be killed
+    guard args.count == 3 else { exit(2) }
+    let c = ChargerClient(path: args[2])
+    var r = c.send(byte: cmdCut) ?? 0
+    write(1, &r, 1)
+    while true { pause() }
 case "--render": exit(MainActor.assumeIsolated { renderAll(to: args.count > 2 ? args[2] : "keeper-render") } ? 0 : 1)
 case "--probe":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(1) }

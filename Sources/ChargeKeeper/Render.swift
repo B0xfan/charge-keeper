@@ -58,6 +58,7 @@ private struct Stage: View {
         ("v3-4-schedule", Snapshot(level: 93, plugged: true, charging: true, limit: 100, mode: .holding, scheduled: Scheduled(name: "Trip", until: Date().addingTimeInterval(30 * 3600), back: 80))),
         ("v3-low-power-on-keeps", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding, lowPower: true, keepsOnQuit: true)),
         ("v3-old-helper", Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cutNote: .oldHelper, calib: 2, helperOld: true)),
+        ("old-helper-switches", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding, helperOld: true)),
     ]
     try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
     var ok = true
@@ -72,7 +73,10 @@ private struct Stage: View {
     let wk = Schedule(name: "Weekdays", limit: 90, on: false, days: weekdays, from: start.addingTimeInterval(-3600), until: start.addingTimeInterval(3600))
     for dark in [false, true] {
         let tone = dark ? "dark" : "light"
-        ok = save(SettingsView(s: Settings(schedules: [trip, wk], calibratedAt: start.addingTimeInterval(-20 * 86_400), calibEvery: 1)).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(tone).png") && ok
+        for (name, tab) in [("general", SettingsTab.general), ("schedules", .schedules), ("care", .care), ("links", .links)] {
+            ok = save(SettingsView(s: KeeperSettings(schedules: [trip, wk], calibratedAt: start.addingTimeInterval(-20 * 86_400), calibEvery: 1), login: .enabled, tab: tab).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(name)-\(tone).png") && ok
+        }
+        ok = save(ScheduleEditor(draft: trip, isNew: false, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-edit-\(tone).png") && ok
         ok = save(ScheduleEditor(draft: trip, isNew: true, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-\(tone).png") && ok
     }
     // The icon alone, drawn 8 times larger (scale 2 = real size on a retina screen), in the colour the menu bar would give it (black on light, white on dark).

@@ -153,9 +153,17 @@ func installExitSafety(_ l: Limiter) {
 func runWatchdog(_ args: [String]) -> Never {
     guard args.count == 4, let parent = pid_t(args[2]), let lim = Int(args[3]), let m = MCL() else { exit(2) }
     for sig in [SIGTERM, SIGINT, SIGHUP] { signal(sig, SIG_IGN) }  // a `killall` aimed at the app must not take the watchdog too; release uses SIGKILL
+    func putBack() -> Never {
+        let ok = restore(m, LimitState(enabled: false, limit: lim), tries: 20)
+        if ok { try? FileManager.default.removeItem(at: markerURL) }  // put back: the note must not outlive it, or the next start would undo a limit the user sets later
+        exit(ok ? 0 : 1)
+    }
+    // One notice from macOS when the parent exits, instead of waking to look. Registered before the check below,
+    // so a parent that died in between is caught by getppid (it changes when the parent dies, even as a zombie).
+    let src = DispatchSource.makeProcessSource(identifier: parent, eventMask: .exit, queue: .main)
+    src.setEventHandler { putBack() }
+    src.resume()
     write(1, "r", 1)
-    while getppid() == parent { usleep(300_000) }  // getppid changes when the parent dies, even as a zombie
-    let ok = restore(m, LimitState(enabled: false, limit: lim), tries: 20)
-    if ok { try? FileManager.default.removeItem(at: markerURL) }  // put back: the note must not outlive it, or the next start would undo a limit the user sets later
-    exit(ok ? 0 : 1)
+    if getppid() != parent { putBack() }
+    withExtendedLifetime(src) { dispatchMain() }
 }

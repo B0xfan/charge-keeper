@@ -1,12 +1,22 @@
 // Mockup v3 panel 5 and 6: the Settings window and the schedule sheet. Everything set once and left alone lives here.
 import SwiftUI
+import ServiceManagement
 
 struct SettingsHost: View {
     @ObservedObject var keeper: Keeper
+    @State private var login = SMAppService.mainApp.status
     var body: some View {
-        SettingsView(s: keeper.snap.settings, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0)
+        SettingsView(s: keeper.snap.settings, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
+                     login: login, setLogin: { on in
+                         UserDefaults.standard.set(true, forKey: "loginItemAsked")  // the user's own choice: never re-added at launch
+                         try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                         login = SMAppService.mainApp.status
+                     })
+            .onAppear { login = SMAppService.mainApp.status }  // the window is reused; System Settings may have changed it meanwhile
     }
 }
+
+enum SettingsTab: Hashable { case general, schedules, care, links }
 
 func limitText(_ v: Int) -> String { "\(v)%" }
 func repeatText(_ d: Set<Int>) -> String {
@@ -19,24 +29,58 @@ func repeatText(_ d: Set<Int>) -> String {
 }
 func scheduleLine(_ x: Schedule) -> String {
     let f: Date.FormatStyle = x.days.isEmpty ? .dateTime.weekday(.abbreviated).hour().minute() : .dateTime.hour().minute()
-    return "charge to \(limitText(x.limit)) · \(x.from.formatted(f)) to \(x.until.formatted(f)), \(repeatText(x.days))"
+    return "charge up to \(limitText(x.limit)) · \(x.from.formatted(f)) to \(x.until.formatted(f)), \(repeatText(x.days))"
 }
 
 struct SettingsView: View {
-    let s: Settings
-    var change: (@escaping (inout Settings) -> Void) -> Void = { _ in }
+    let s: KeeperSettings
+    var change: (@escaping (inout KeeperSettings) -> Void) -> Void = { _ in }
     var startCalibration: () -> Void = {}
     var canCalibrate = true
+    var login = SMAppService.Status.notRegistered
+    var setLogin: (Bool) -> Void = { _ in }
+    @State var tab = SettingsTab.general
     @State private var editing: Schedule?
 
     var body: some View {
-        Form {
+        VStack(spacing: 0) {
+            // A segmented switch rather than a TabView: same look, and it draws in the off-screen pictures too.
+            Picker("Section", selection: $tab) {
+                Text("General").tag(SettingsTab.general); Text("Schedules").tag(SettingsTab.schedules)
+                Text("Battery Care").tag(SettingsTab.care); Text("Links").tag(SettingsTab.links)
+            }.pickerStyle(.segmented).labelsHidden().fixedSize()
+            Form {
+                switch tab {
+                case .general:
+                    Section {
+                        Toggle(isOn: Binding(get: { login == .enabled || login == .requiresApproval }, set: setLogin)) {
+                            Text("Start at login")
+                            Text(login == .requiresApproval ? "Waiting for your OK in System Settings, General, Login Items." : "Opens Charge Keeper when you log in to your Mac.")
+                        }
+                    }
+                    quitSection
+                case .schedules: schedulesSection
+                case .care: careSection
+                case .links: linksSection
+                }
+            }.formStyle(.grouped)
+        }
+        .padding(.top, 8).frame(width: 460, height: 400)  // fixed: every tab fits, so the window keeps one size
+        .sheet(item: $editing) { x in
+            ScheduleEditor(draft: x, isNew: !s.schedules.contains { $0.id == x.id },
+                           save: { new in change { st in if let i = st.schedules.firstIndex(where: { $0.id == new.id }) { st.schedules[i] = new } else { st.schedules.append(new) } }; editing = nil },
+                           delete: { id in change { $0.schedules.removeAll { $0.id == id } }; editing = nil },
+                           cancel: { editing = nil })
+        }
+    }
+
+    @ViewBuilder private var schedulesSection: some View {
             Section("Schedules") {
                 ForEach(s.schedules) { x in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) { Text(x.name).bold(); Text(scheduleLine(x)).font(.caption).foregroundStyle(.secondary) }
                         Spacer()
-                        Button("Edit") { editing = x }.buttonStyle(.link)
+                        Button("Edit") { editing = x }.buttonStyle(.link).accessibilityLabel("Edit \(x.name)")
                         Toggle(x.name, isOn: Binding(get: { x.on }, set: { on in change { st in if let i = st.schedules.firstIndex(where: { $0.id == x.id }) { st.schedules[i].on = on } } }))
                             .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                     }
@@ -45,13 +89,13 @@ struct SettingsView: View {
                     ForEach(calibEveryChoices, id: \.self) { m in Text(m == 0 ? "Off" : m == 1 ? "Every month" : "Every \(m) months").tag(m) }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Calibration cycle")
-                        Text(nextCalibration(months: s.calibEvery, last: s.calibratedAt, since: s.calibSince).map { $0 <= Date() ? "Due now: starts once plugged in." : "Next: \($0.formatted(date: .abbreviated, time: .omitted)) or later, once plugged in." } ?? "Runs only when you press Start under Battery care.")
+                        Text("Automatic calibration")
+                        Text(nextCalibration(months: s.calibEvery, last: s.calibratedAt, since: s.calibSince).map { $0 <= Date() ? "Due now: starts once plugged in." : "Next: \($0.formatted(date: .abbreviated, time: .omitted)) or later, once plugged in." } ?? "Off: runs only when you press Start Calibration under Battery Care.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 HStack {
-                    Button("Add schedule…") {
+                    Button("Add Schedule…") {
                         let start = Calendar.current.date(bySettingHour: 7, minute: 0, second: 0, of: Date().addingTimeInterval(86_400)) ?? Date()
                         editing = Schedule(name: "", limit: 100, from: start, until: start.addingTimeInterval(11 * 3600))
                     }
@@ -59,14 +103,20 @@ struct SettingsView: View {
                     Text("Outside a schedule, your slider limit applies.").font(.caption).foregroundStyle(.secondary)
                 }
             }
+    }
+
+    @ViewBuilder private var quitSection: some View {
             Section("When Charge Keeper quits") {
                 Picker("When Charge Keeper quits", selection: Binding(get: { s.keepOnQuit }, set: { v in change { $0.keepOnQuit = v } })) {
                     Text("Charging goes back to normal").tag(false)
                     Text("Keep my limit").tag(true)
                 }.pickerStyle(.radioGroup).labelsHidden()
-                Text("Keep my limit works for limits of 80% and up: the Mac holds those by itself. Limits under 80% always need Charge Keeper running.")
+                Text("Keep my limit works for limits of \(macFloor)% and up: the Mac holds those by itself. Limits under \(macFloor)% always need Charge Keeper running.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+    }
+
+    @ViewBuilder private var careSection: some View {
             Section("Battery care") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -75,7 +125,7 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
-                    Button("Start") { startCalibration() }.disabled(!canCalibrate)
+                    Button("Start Calibration") { startCalibration() }.disabled(!canCalibrate)
                 }
                 Picker(selection: Binding(get: { s.led }, set: { v in change { $0.led = v } })) {
                     Text("Normal").tag(LedMode.normal)
@@ -88,21 +138,16 @@ struct SettingsView: View {
                     }
                 }
             }
+    }
+
+    @ViewBuilder private var linksSection: some View {
             Section("Shortcuts and links") {
                 Text("These links work in the Shortcuts app (its Open URLs action), in scripts or as a bookmark. Siri runs a shortcut by its name.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                ForEach(["chargekeeper://limit/80", "chargekeeper://full", "chargekeeper://rundown"], id: \.self) { l in
+                ForEach(linkExamples, id: \.self) { l in
                     Text(l).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 }
             }
-        }
-        .formStyle(.grouped).frame(width: 460).frame(minHeight: 640)  // a grouped Form scrolls, so without a height its window opens as a bare title bar
-        .sheet(item: $editing) { x in
-            ScheduleEditor(draft: x, isNew: !s.schedules.contains { $0.id == x.id },
-                           save: { new in change { st in if let i = st.schedules.firstIndex(where: { $0.id == new.id }) { st.schedules[i] = new } else { st.schedules.append(new) } }; editing = nil },
-                           delete: { id in change { $0.schedules.removeAll { $0.id == id } }; editing = nil },
-                           cancel: { editing = nil })
-        }
     }
 }
 
@@ -121,8 +166,9 @@ struct ScheduleEditor: View {
     var body: some View {
         let parts: DatePickerComponents = kind == .once ? [.date, .hourAndMinute] : .hourAndMinute
         Form {
+            Section {
             TextField("Name", text: $draft.name, prompt: Text("Trip"))
-            Picker("Charge to", selection: $draft.limit) { ForEach(Array(stride(from: limitRange.lowerBound, through: limitRange.upperBound, by: 5)), id: \.self) { Text(limitText($0)).tag($0) } }
+            Picker("Charge up to", selection: $draft.limit) { ForEach(Array(stride(from: limitRange.lowerBound, through: limitRange.upperBound, by: 5)), id: \.self) { Text(limitText($0)).tag($0) } }
             Picker("Repeat", selection: $kind) {
                 Text("Once").tag(RepeatKind.once); Text("Every day").tag(RepeatKind.everyDay)
                 Text("Weekdays").tag(RepeatKind.weekdays); Text("Chosen days").tag(RepeatKind.chosen)
@@ -139,7 +185,7 @@ struct ScheduleEditor: View {
                 HStack {
                     ForEach(1...7, id: \.self) { d in
                         Toggle(Calendar.current.veryShortWeekdaySymbols[d - 1], isOn: Binding(get: { draft.days.contains(d) }, set: { on in if on { draft.days.insert(d) } else if draft.days.count > 1 { draft.days.remove(d) } }))
-                            .toggleStyle(.button)
+                            .toggleStyle(.button).accessibilityLabel(Calendar.current.weekdaySymbols[d - 1])
                     }
                 }
             }
@@ -159,6 +205,7 @@ struct ScheduleEditor: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(kind == .once && draft.until <= draft.from)
             }
+            } header: { Text(isNew ? "New Schedule" : "Edit Schedule").font(.headline) }
         }
         .formStyle(.grouped).frame(width: 360).frame(minHeight: 308)
     }
