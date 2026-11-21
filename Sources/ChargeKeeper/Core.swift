@@ -76,7 +76,7 @@ struct Battery {
     var charging: Bool?, external: Bool?, current: Int?, tempF: Double?
 }
 // The battery reports hundredths of a degree C (3019 = 30.2°C; its stored lifetime min 5 / max 42 fit that). Shown and compared
-// in °F (John's choice), no unit setting. Where it sits moves between boots and macOS versions: at the battery's top level, in its
+// in °F, no unit setting. Where it sits moves between boots and macOS versions: at the battery's top level, in its
 // BatteryData, or (macOS 27, seen 2026-10-27) only in the BatteryData of the AppleSmartBatteryPack below it.
 func batteryTempCentiC(_ svc: io_service_t) -> Int? {
     func prop(_ e: io_registry_entry_t, _ k: String) -> Any? { IORegistryEntryCreateCFProperty(e, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() }

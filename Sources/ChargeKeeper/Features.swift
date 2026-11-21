@@ -1,4 +1,4 @@
-// Mockup v3 (John, 2026-11-16): schedules, run down on battery, calibration cycle, MagSafe light, links. Pure rules only;
+// Mockup v3: schedules, run down on battery, calibration cycle, MagSafe light, links. Pure rules only;
 // Keeper (App.swift) applies them and the helper (Charger.swift) does the root-only parts.
 import Foundation
 
@@ -55,7 +55,7 @@ func nextCalib(_ step: Int, level: Int?) -> Int? {
     }
 }
 
-// Calibration on a schedule (John, 2026-11-20): every `months` months (0 = off), counted from the last run or from when it
+// Calibration on a schedule: every `months` months (0 = off), counted from the last run or from when it
 // was last set or cancelled, whichever is later. It starts the first time it is due while Charge Keeper holds the limit on the charger.
 let calibEveryChoices = [0, 1, 2, 3]
 func nextCalibration(months: Int, last: Date?, since: Date?, cal: Calendar = .current) -> Date? {

@@ -119,7 +119,7 @@ func helperSelftest(_ expect: (Bool, String) -> Void) {
 }
 
 func featureSelftest(_ expect: (Bool, String) -> Void) {
-    var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "America/Costa_Rica")!
+    var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
     func d(_ day: Int, _ h: Int, _ m: Int = 0) -> Date { cal.date(from: DateComponents(year: 2026, month: 11, day: day, hour: h, minute: m))! }  // Nov 16 2026 is a Monday
     let trip = Schedule(name: "Trip", limit: 100, from: d(17, 7), until: d(18, 18))
     expect(occurrenceEnd(trip, now: d(17, 6), cal: cal) == nil && occurrenceEnd(trip, now: d(17, 7), cal: cal) == d(18, 18) && occurrenceEnd(trip, now: d(18, 18), cal: cal) == nil, "once: runs from its start up to its end")

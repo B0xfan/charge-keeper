@@ -34,7 +34,7 @@ final class Limiter {
         }
     }
 
-    // Holds the limit at `target`. Cheap when it already holds. adopt: John chose "Use Charge Keeper", so a limit that is
+    // Holds the limit at `target`. Cheap when it already holds. adopt: the user chose "Use Charge Keeper", so a limit that is
     // already on is taken over. reassert: just after a wake, a changed limit is set back (sleep may reset it) instead of
     // counting as someone else's change.
     func apply(_ target: Int, adopt: Bool = false, reassert: Bool = false) -> Applied {
@@ -45,7 +45,7 @@ final class Limiter {
         guard let cur = m.state() else { return .failed("Could not read the Mac's charge limit.") }
         let want = LimitState(enabled: true, limit: target)
         if orig == nil {
-            guard !cur.enabled || adopt else { return .foreign }  // the Mac's own limit (or another app's) is on: only John's choice takes it over
+            guard !cur.enabled || adopt else { return .foreign }  // the Mac's own limit (or another app's) is on: only the user's choice takes it over
             // Taken over or not, giving it back means charging back to normal, as the Quit button says.
             let back = LimitState(enabled: false, limit: cur.limit)
             guard startWatchdog(back) else { return .failed("Could not start the safety watchdog, so nothing was changed.") }
@@ -56,7 +56,7 @@ final class Limiter {
             if cur == want { held = want; return .ok }
             if changedOutside(cur: cur, held: held, reassert: reassert) { disownLocked(); return .changed }
         }
-        // Raising a limit that is on keeps macOS in "limit reached" (it never charges back up), so switch it off first (John, 2026-10-28).
+        // Raising a limit that is on keeps macOS in "limit reached" (it never charges back up), so switch it off first.
         if raiseNeedsReset(cur: cur, target: target) { m.disable() }
         guard m.setLimit(target) else { return fail("macOS refused the limit \(target)%") }
         if m.enabled() != true { m.enable() }  // setting the level may already switch it on
@@ -156,6 +156,6 @@ func runWatchdog(_ args: [String]) -> Never {
     write(1, "r", 1)
     while getppid() == parent { usleep(300_000) }  // getppid changes when the parent dies, even as a zombie
     let ok = restore(m, LimitState(enabled: false, limit: lim), tries: 20)
-    if ok { try? FileManager.default.removeItem(at: markerURL) }  // put back: the note must not outlive it, or the next start would undo a limit John sets later
+    if ok { try? FileManager.default.removeItem(at: markerURL) }  // put back: the note must not outlive it, or the next start would undo a limit the user sets later
     exit(ok ? 0 : 1)
 }

@@ -1,7 +1,7 @@
 #!/bin/zsh
-# The one step that needs John's Mac password: installs the charger helper, which only limits under 80% use.
+# The one step that needs the Mac password: installs the charger helper, which only limits under 80% use.
 # Copies the helper out of the installed app, signs the copy, and asks macOS (its standard password box) to put it in
-# place as a system helper that starts with the Mac. Run it only when John is expecting the password box.
+# place as a system helper that starts with the Mac. Run it only when you are expecting the password box.
 # --remove takes the helper out again (also asks for the password); removing it switches the charger back on first.
 set -euo pipefail
 LABEL=com.johnhesch.keeper.helper

@@ -1,6 +1,6 @@
 // Limits under 80%. macOS refuses its own limit below 80 (tested 2026-10-27), so under 80 Charge Keeper keeps the Mac's limit
-// at 80 as a backstop and switches the charger's power off at John's limit and back on `cutBand` points lower. The switch is
-// an SMC key (chargerKeys; on John's M2 CHIE, the same switch batt's adapter mode and AlDente's discharge use). Writing it needs
+// at 80 as a backstop and switches the charger's power off at the chosen limit and back on `cutBand` points lower. The switch is
+// an SMC key (chargerKeys; on an M2 CHIE, the same switch batt's adapter mode and AlDente's discharge use). Writing it needs
 // root, so a small helper does it: this program with --helper, started by launchd as root (scripts/install-helper.sh).
 // The helper owns the safety: power goes back on when the app's connection closes (quit, crash, force-quit), when the app
 // stops checking in (hung), before sleep, at the helper's own start (boot, or a restart after it died), on a stop signal,
@@ -27,7 +27,7 @@ let cmdLowOn = UInt8(ascii: "L"), cmdLowOff = UInt8(ascii: "l"), cmdLedDark = UI
 let replyCut = UInt8(ascii: "C"), replyOn = UInt8(ascii: "O"), replyBusy = UInt8(ascii: "B"), replyErr = UInt8(ascii: "E"), replyDone = UInt8(ascii: "Y")
 let ledSystem: UInt8 = 0x00, ledOff: UInt8 = 0x01  // the SMC key ACLC (MagSafe light): 0 = macOS decides, 1 = off (as batt uses it)
 
-// Heat pause, fixed points in °F (John, 2026-10-27): pause above 95, start again at 91 or cooler.
+// Heat pause, fixed points in °F: pause above 95, start again at 91 or cooler.
 let heatPauseF = 95.0, heatResumeF = 91.0
 let heatFloor = 50  // at or under this level heat pause ends: under 80 a pause runs the Mac on its battery
 
@@ -68,14 +68,14 @@ func lidClosed() -> Bool {
     return (IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool) ?? false
 }
 
-// Any AlDente edition (John's is com.apphousekitchen.aldente-pro). Its root helper is a daemon, not listed here.
+// Any AlDente edition. Its root helper is a daemon, not listed here.
 func aldenteRunning() -> Bool { NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier?.hasPrefix("com.apphousekitchen.aldente") == true } }
 
 // MARK: - the switch
 
 protocol ChargerSwitch: AnyObject { func read() -> UInt8?; func write(_ v: UInt8) -> Bool }
 
-// The charger switch differs by firmware (batt's adapter keys): CHIE (off 0x08) on John's M2 since macOS 26, CH0I or CH0J
+// The charger switch differs by firmware (batt's adapter keys): CHIE (off 0x08) on an M2 since macOS 26, CH0I or CH0J
 // (off 0x01) on Apple chips with older firmware. Intel is not covered: the app is built for Apple chips only.
 let chargerKeys: [(key: String, off: UInt8)] = [("CHIE", 0x08), ("CH0I", 0x01), ("CH0J", 0x01)]
 func fromChip(_ raw: UInt8, off: UInt8?) -> UInt8 { off == nil ? raw : raw == 0 ? powerOn : powerOff }  // charger keys: any non-zero byte is off (another app may use its own)
@@ -216,7 +216,7 @@ private func noSigpipeCloexec(_ fd: Int32) {
     _ = fcntl(fd, F_SETFD, FD_CLOEXEC)  // the app's watchdog must not inherit the connection and keep it open after the app dies
 }
 
-// Listens on `path`; only `uid` (John) and root may talk to it. One serial queue owns the guard.
+// Listens on `path`; only `uid` (the user) and root may talk to it. One serial queue owns the guard.
 final class HelperServer {
     let g: ChargerGuard, q: DispatchQueue, uid: uid_t, extras: Extras
     private var listener: DispatchSourceRead?

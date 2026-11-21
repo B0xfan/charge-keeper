@@ -4,7 +4,7 @@ import SwiftUI
 import AppKit
 import ServiceManagement
 
-// foreign: the Mac's limit was already on; steppedAside: it was changed while we held; macLimit: John chose the Mac's own limit.
+// foreign: the Mac's limit was already on; steppedAside: it was changed while we held; macLimit: the user chose the Mac's own limit.
 enum Mode: Equatable { case starting, holding, fullOnce, foreign, steppedAside, macLimit, unsupported, failed(String) }
 
 struct Snapshot: Equatable {
@@ -94,7 +94,7 @@ let stillSweep = 0.5  // Reduce Motion: a still picture of "charging"
 func iconFill(_ sweep: Double) -> Double { 0.07 + 0.93 * sweep }  // the icon starts as a sliver, never empty
 
 // Start with the Mac, once, and only for the copy in /Applications (a build folder copy must not become a login item).
-// If John switches it off in System Settings it stays off: the question is asked a single time.
+// If the user switches it off in System Settings it stays off: the question is asked a single time.
 func shouldRegisterLoginItem(path: String, asked: Bool) -> Bool { !asked && path.hasPrefix("/Applications/") }
 
 func registerLoginItemOnce() {
@@ -116,9 +116,9 @@ final class Keeper: ObservableObject {
     private let work = DispatchQueue(label: "keeper.work")  // every Mac-limit call happens here, never on the screen thread
     private var limit: Int  // work queue only
     private var fullOnce = false  // work queue only
-    // work queue only: John chose the Mac's own limit
+    // work queue only: the user chose the Mac's own limit
     private var useMac = UserDefaults.standard.bool(forKey: "useMacLimit") { didSet { UserDefaults.standard.set(useMac, forKey: "useMacLimit") } }
-    // work queue only: someone else changed the limit while we held; wait for John's choice, also after a restart
+    // work queue only: someone else changed the limit while we held; wait for the user's choice, also after a restart
     private var aside = UserDefaults.standard.bool(forKey: "steppedAside") { didSet { UserDefaults.standard.set(aside, forKey: "steppedAside") } }
     private var adopt = false  // work queue only: one step may take over a limit that is already on
     // work queue only. From sleep until the first good reading after wake, a changed limit is set back (sleep may reset it), not
@@ -222,7 +222,7 @@ final class Keeper: ObservableObject {
         var mode = Mode.unsupported
         var mac: LimitState? = nil
         if let l = limiter {
-            // Take back over only the limit we left on: one John has changed since then is his, and is asked about as usual.
+            // Take back over only the limit we left on: one the user has changed since then is theirs, and is asked about as usual.
             if leftOnCheck { leftOnCheck = false; if l.current() == LimitState(enabled: true, limit: limit) { adopt = true } }
             if useMac {
                 // Normally a no-op (the choice is offered only while we hold nothing); covers a tick that took over just before the click.
@@ -241,7 +241,7 @@ final class Keeper: ObservableObject {
                 case .failed(let why): mode = .failed(why)
                 }
                 if case .failed = r {} else {
-                    adopt = false  // kept on a failure, so John's "Use Charge Keeper" is tried again next tick
+                    adopt = false  // kept on a failure, so the user's "Use Charge Keeper" is tried again next tick
                     if woke { reassert = false; woke = false }
                 }
             }
