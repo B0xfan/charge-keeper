@@ -11,7 +11,8 @@ final class Keeper: ObservableObject {
     private var panelOpen = false
     private var animTimer: Timer?  // exists only while the Mac is charging, Reduce Motion is off and a screen is awake
     private var screensAsleep = false
-    private let limiter: Limiter?
+    private let limiter: ChargeLimit?
+    private let floor = intelMac ? 0 : macFloor  // the lowest limit held without the charger switch: the helper's BCLM holds any on Intel
     private let work = DispatchQueue(label: "keeper.work")  // every Mac-limit call happens here, never on the screen thread
     private var limit: Int  // work queue only
     // work queue only: the user chose the Mac's own limit
@@ -37,6 +38,8 @@ final class Keeper: ObservableObject {
     private var leftOnCheck = false  // work queue only: the last run quit with "Keep my limit"; checked once, at the first step
     private var quitting = false  // work queue only
     private var wasHolding = false  // the last step held the limit (a scheduled calibration waits for that)
+    private var health: BatteryHealth?  // work queue only; read once an hour and when Settings opens
+    private var healthRead = Date.distantPast
     private var settings: KeeperSettings {
         didSet {
             let d = UserDefaults.standard
@@ -71,7 +74,7 @@ final class Keeper: ObservableObject {
                             look: d.data(forKey: "look").flatMap { try? JSONDecoder().decode(Look.self, from: $0) } ?? Look())
         // Quit with "Keep my limit" left the Mac's limit on: take it back over instead of asking as if it were someone else's.
         leftOnCheck = d.bool(forKey: "leftOn"); d.removeObject(forKey: "leftOn")
-        limiter = MCL().map(Limiter.init)
+        limiter = intelMac ? HelperLimiter() : MCL().map(Limiter.init)
         let nc = NSWorkspace.shared.notificationCenter
         for (name, asleep) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false)] {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.screensAsleep = asleep; self?.refreshAnimation() }
@@ -113,9 +116,10 @@ final class Keeper: ObservableObject {
         let sched = activeSchedule(settings.schedules, now: now, skipped: skipped)
         let due = wasHolding && nextCalibration(months: settings.calibEvery, last: settings.calibratedAt, since: settings.calibSince).map { now >= $0 } == true
         let macCal = macChargingToFull()
+        if now.timeIntervalSince(healthRead) > 3600 || now < healthRead { health = readHealth(); healthRead = now }
         let d = decide(&c, level: b.current, external: b.external, tempF: b.tempF, scheduled: sched.map { $0.0.limit }, limit: limit,
                        sailing: sailOn, bottom: bottom, heat: heatOn, calibDue: due, autoRunDown: settings.autoRunDown, holding: wasHolding,
-                       macCal: macCal, lid: lidClosed())
+                       macCal: macCal, floor: floor, lid: lidClosed())
         if d.calibDone { settings.calibratedAt = now }
         let top = d.top, filling = d.filling, p = d.plan
         var mode = Mode.unsupported
@@ -138,6 +142,7 @@ final class Keeper: ObservableObject {
                 case .changed: aside = true; mode = .steppedAside
                 case .unsupported: mode = .unsupported
                 case .failed(let why): mode = .failed(why)
+                case .noHelper(let old): mode = .needsHelper; if old { helperOld = true }
                 }
                 if case .failed = r {} else {
                     adopt = false  // kept on a failure, so the user's "Use Charge Keeper" is tried again next tick
@@ -151,7 +156,7 @@ final class Keeper: ObservableObject {
         // Both need Charge Keeper holding. A failed step keeps them (it may be a moment's hiccup; no cut is made meanwhile).
         if case .failed = mode {} else if !active { c.runDown = nil; c.calib = 0 }
         let want = wantsCut(mode: mode, level: b.current, planCut: p.cut)
-        let need = want || mode == .holding && top < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
+        let need = want || mode == .holding && top < floor  // a range's bottom under 80 needs the switch only while it rests (want)
         var note = steerCharger(need: need, want: want, deep: c.calib == 2)
         // An automatic run down the charger could not follow (no helper, AlDente, another app's cut) ends quietly; the next
         // step tries again, so it starts once the cause is gone. Its note would wrongly talk about limits under 80.
@@ -160,14 +165,14 @@ final class Keeper: ObservableObject {
         if note == .oldHelper || c.calib == 2 && note == .noHelper { c.calib = 0 }
         steerLight(ledDark(settings.led, plugged: b.external == true, charging: b.charging == true))
         // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
-        let paused = active && c.pausedAt != nil && (cutNow || b.external == true && level >= macFloor)
+        let paused = active && c.pausedAt != nil && (cutNow || b.external == true && level >= floor)
         // Only above our level on the charger: once the battery is back down, the flag alone never changes the text.
         let calibrating = mode == .holding && !cutNow && b.external == true && level > max(top, macFloor) && macCal
-        let keep = settings.keepOnQuit && mode == .holding && sched == nil && p.mac == limit && limit >= macFloor && !p.cut
+        let keep = settings.keepOnQuit && mode == .holding && sched == nil && p.mac == limit && limit >= macFloor && !p.cut && !intelMac
         let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: top, mode: mode, mac: mac, cut: cutNow, cutNote: note,
                          heatOn: heatOn, sailing: sailOn, bottom: clampBottom(bottom, limit: top), tempF: b.tempF, paused: paused, resting: c.resting, calibrating: calibrating,
                          runDown: c.runDown, autoRun: c.autoRun, calib: c.calib, scheduled: sched.map { Scheduled(name: $0.0.name, until: $0.1, back: limit) },
-                         lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled, keepsOnQuit: keep, helperOld: helperOld, settings: settings)
+                         lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled, keepsOnQuit: keep, helperOld: helperOld, settings: settings, health: health)
         DispatchQueue.main.async {
             keepLimitOnExit = keep
             self.snap = s
@@ -301,6 +306,7 @@ final class Keeper: ObservableObject {
             }
         }
     }
+    func refreshHealth() { work.async { self.healthRead = .distantPast; self.step() } }
     func update(_ change: @escaping (inout KeeperSettings) -> Void) { work.async { change(&self.settings); self.step() } }
     func open(_ link: LinkAction) {
         switch link {

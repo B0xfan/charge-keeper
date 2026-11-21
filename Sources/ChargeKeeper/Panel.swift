@@ -53,6 +53,10 @@ struct Panel: View {
             }
             if !showsChoice(s.mode) { LevelBar(level: s.level, marker: s.calib == 2 ? calibFloor : s.calib > 0 ? nil : s.mode == .holding ? s.limit : s.mode == .macLimit && s.mac?.enabled == true ? s.mac?.limit : nil,
                                                low: s.mode == .holding && s.sailing ? s.bottom : nil, stretch: isCharging(s) ? bar : 0) }
+            if let h = s.health, h.service {  // mockup v4: only when macOS itself says so
+                Note(Text("macOS recommends a battery service.").bold().foregroundColor(warnText)
+                     + Text(h.maxPercent.map { " The battery holds \($0)% of what it did when new." } ?? "") + Text(" Charge Keeper keeps working as usual."))
+            }
             if s.paused, let f = s.tempF {
                 Note(Text("Charging is paused because the battery is \(degrees(f)).").bold().foregroundColor(warnText)
                     + Text(" It starts again by itself once the battery cools to \(degrees(heatResumeF)). ")
@@ -99,6 +103,10 @@ struct Panel: View {
                 Button { act.choose(false) } label: { Text("Use Charge Keeper Instead").frame(maxWidth: .infinity) }
             case .unsupported:
                 Note(Text("This Mac has no built-in charge limit.").bold().foregroundColor(warnText) + Text(" Charge Keeper cannot hold a level here."))
+            case .needsHelper:  // mockup v4, Intel
+                Note(Text("This Mac needs the charger helper for any limit.").bold().foregroundColor(warnText)
+                     + Text(" Intel Macs have no built-in limit, so Charge Keeper sets it through a small helper. It asks for your Mac password once."))
+                helperButton(update: s.helperOld)
             case .failed(let why):
                 Note(Text("Charge Keeper could not set the limit.").bold().foregroundColor(warnText) + Text(" \(why)"))
             case .fullOnce:

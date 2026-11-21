@@ -7,16 +7,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Release build
-        run: swift build -c release -j 2
+      - name: Build the app (Apple chips and Intel, with the Shortcuts actions' metadata)
+        run: scripts/make-app.sh
       - name: Self-test (pure logic only; the runner has no battery, so nothing touches charging)
-        run: .build/release/ChargeKeeper --selftest
-      - name: Read-only smoke test (must not crash on a machine without the limit)
-        run: .build/release/ChargeKeeper --probe || true
-      - name: Package the app
+        run: '"build/Charge Keeper.app/Contents/MacOS/ChargeKeeper" --selftest'
+      - name: Self-test of the Intel half (under Rosetta, when the runner has it)
         run: |
-          scripts/make-app.sh
-          ditto -c -k --keepParent "build/Charge Keeper.app" ChargeKeeper.zip
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then arch -x86_64 "build/Charge Keeper.app/Contents/MacOS/ChargeKeeper" --selftest
+          else echo "No Rosetta on this runner: the Intel half was built but not run"; fi
+      - name: Read-only smoke test (must not crash on a machine without the limit)
+        run: '"build/Charge Keeper.app/Contents/MacOS/ChargeKeeper" --probe || true'
+      - name: Shortcuts actions in the app
+        run: python3 -I -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["actions"]))' "build/Charge Keeper.app/Contents/Resources/Metadata.appintents/extract.actionsdata"
+      - name: Package the app
+        run: ditto -c -k --keepParent "build/Charge Keeper.app" ChargeKeeper.zip
       - uses: actions/upload-artifact@v4
         with:
           name: ChargeKeeper

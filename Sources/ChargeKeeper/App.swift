@@ -13,6 +13,7 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
     func applicationDidFinishLaunching(_ n: Notification) {
         keeper = Keeper()
         keeper.onIcon = { [weak self] in self?.updateIcon() }
+        MainActor.assumeIsolated { runningKeeper = keeper }  // for the Shortcuts actions (Intents.swift)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.target = self
         item.button?.action = #selector(toggle)

@@ -3,7 +3,8 @@ import Foundation
 import ServiceManagement
 
 // foreign: the Mac's limit was already on; steppedAside: it was changed while we held; macLimit: the user chose the Mac's own limit.
-enum Mode: Equatable { case starting, holding, fullOnce, foreign, steppedAside, macLimit, unsupported, failed(String) }
+// needsHelper: an Intel Mac without the charger helper (mockup v4); it has no limit of its own.
+enum Mode: Equatable { case starting, holding, fullOnce, foreign, steppedAside, macLimit, unsupported, failed(String), needsHelper }
 
 struct Snapshot: Equatable {
     var level = 0
@@ -29,6 +30,7 @@ struct Snapshot: Equatable {
     var keepsOnQuit = false  // quitting now leaves the limit on ("Keep my limit")
     var helperOld = false  // the installed helper predates low power, the MagSafe light and the deep run down
     var settings = KeeperSettings()
+    var health: BatteryHealth? = nil  // mockup v4
 }
 
 struct Scheduled: Equatable { var name: String; var until: Date; var back: Int }
@@ -59,7 +61,7 @@ func holdLevel(_ s: Snapshot) -> Int { s.cutNote == nil ? s.limit : max(s.limit,
 // The panels that show the Mac's own limit instead of Charge Keeper's slider.
 func showsChoice(_ m: Mode) -> Bool { m == .foreign || m == .steppedAside }
 // Charge Keeper has let the Mac's limit be (Quit changes nothing then).
-func notHolding(_ m: Mode) -> Bool { showsChoice(m) || m == .macLimit }
+func notHolding(_ m: Mode) -> Bool { showsChoice(m) || m == .macLimit || m == .needsHelper }
 
 let limitRange = 50...100  // the approved mockup's slider; 80 and up is the Mac's own limit, under 80 the charger switch (Charger.swift)
 
@@ -78,6 +80,7 @@ func statusText(_ s: Snapshot) -> String {
     case .steppedAside: return "Stepped aside"
     case .macLimit: return s.mac.map { $0.enabled ? "Mac's limit: \($0.limit)%" : "No limit on" } ?? "Mac's limit"
     case .failed: return "Could not set the limit"
+    case .needsHelper: return !s.plugged ? "On battery" : s.charging ? "Charging" : "Not charging"
     case .holding, .fullOnce:
         if s.calib > 0 { return "Calibrating, step \(s.calib) of 3" }
         if let t = s.runDown { return "On battery, down to \(t)%" }

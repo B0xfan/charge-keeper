@@ -3,7 +3,16 @@
 // the limit needs no special permission, so nothing separate has to run.
 import Foundation
 
-enum Applied: Equatable { case ok, foreign, changed, unsupported, failed(String) }
+enum Applied: Equatable { case ok, foreign, changed, unsupported, failed(String), noHelper(old: Bool) }
+
+// What Keeper needs from a limit: the Mac's own (Limiter, Apple chips) or the helper's BCLM (HelperLimiter, Intel).
+protocol ChargeLimit: AnyObject {
+    func apply(_ target: Int, adopt: Bool, reassert: Bool) -> Applied
+    func current() -> LimitState?
+    @discardableResult func release(final: Bool) -> Bool
+    func leaveOn()
+}
+extension ChargeLimit { @discardableResult func release() -> Bool { release(final: false) } }
 
 let markerURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("Charge Keeper/engaged")
@@ -14,7 +23,7 @@ let markerURL = FileManager.default.urls(for: .applicationSupportDirectory, in: 
 func changedOutside(cur: LimitState, held: LimitState?, reassert: Bool) -> Bool { !reassert && held != nil && cur != held }
 func raiseNeedsReset(cur: LimitState, target: Int) -> Bool { cur.enabled && target > cur.limit }
 
-final class Limiter {
+final class Limiter: ChargeLimit {
     private let m: MCL
     private let lock = NSLock()
     private var orig: LimitState?  // the setting before we touched it; non-nil exactly while we own the limit
@@ -125,15 +134,47 @@ final class Limiter {
     }
 }
 
+// Intel (mockup v4): the limit is the helper's BCLM over its own connection, so the helper gives it back when the app quits,
+// crashes or is killed, or stops checking in (each step renews it). That replaces the watchdog and the start-up note used above.
+final class HelperLimiter: ChargeLimit {
+    private let line = ChargerClient(path: helperSocket)
+    private let lock = NSLock()
+    private var closed = false
+    func apply(_ target: Int, adopt: Bool, reassert: Bool) -> Applied {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed else { return .failed("Charge Keeper is closing.") }
+        return helperLimitResult(line.send(byte: limitCommand(target)))
+    }
+    func current() -> LimitState? { nil }  // no Mac limit of its own to show
+    @discardableResult func release(final: Bool) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if final { closed = true }
+        let r = line.send(byte: cmdLimitBase + noLimit)
+        line.disconnect()  // closing the line gives the limit back too, should the byte not have arrived
+        return r == nil || r == replyDone
+    }
+    // shortcut: Intel has no limit that outlives the app, so "Keep my limit" gives charging back like a normal quit.
+    func leaveOn() { release(final: true) }
+}
+func helperLimitResult(_ r: UInt8?) -> Applied {
+    switch r {
+    case replyDone: return .ok
+    case nil: return .noHelper(old: false)
+    case replyBusy: return .failed("Another app has set a charge limit on this Mac.")
+    case replyErr: return .failed("The charger helper could not set the limit.")
+    default: return .noHelper(old: true)  // an older helper: it reads the limit byte as "power on"
+    }
+}
+
 // MARK: - every ending we can catch restores first
 
-var activeLimiter: Limiter? = nil
+var activeLimiter: ChargeLimit? = nil
 // Main thread only: set by Keeper while "Keep my limit" applies right now. Read by the normal exit path only; a crash or a
 // kill signal still puts charging back (the watchdog and the signal handlers below never look at it).
 var keepLimitOnExit = false
 var signalSources: [DispatchSourceSignal] = []
 
-func installExitSafety(_ l: Limiter) {
+func installExitSafety(_ l: ChargeLimit) {
     activeLimiter = l
     atexit {
         // Quit, log out or restart with "Keep my limit": leave it on, and tell the next start to take it back over.

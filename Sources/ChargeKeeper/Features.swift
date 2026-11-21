@@ -96,12 +96,12 @@ func decide(_ c: inout Carry, level: Int?, external: Bool?, tempF: Double?, sche
     // Run down ends at its level, when unplugged, or when the lid closes (cutting power could put the Mac to sleep).
     if let t = c.runDown, level.map({ $0 <= t }) ?? false || external != true || lid() { c.runDown = nil }
     let filling = c.fullOnce || c.calib == 1 || c.calib == 3
-    let rb = restBottom(limit: top, sailing: sailing, bottom: clampBottom(bottom, limit: top))
+    let rb = restBottom(limit: top, sailing: sailing, bottom: clampBottom(bottom, limit: top), floor: floor)
     if let lv = level {  // an unreadable level changes neither state
         c.pausedAt = heatStep(on: heat, tempF: tempF, level: lv, pausedAt: c.pausedAt)
         c.resting = nextResting(level: lv, top: top, bottom: rb, resting: c.resting)
     }
-    var p = plan(level: level ?? 0, limit: top, bottom: rb, resting: c.resting, fullOnce: filling, pausedAt: c.pausedAt)
+    var p = plan(level: level ?? 0, limit: top, bottom: rb, resting: c.resting, fullOnce: filling, pausedAt: c.pausedAt, floor: floor)
     if c.runDown == nil { c.autoRun = false }
     if let lv = level, lv < top { c.autoHeld = false }  // "Stop This Time" lasts until the level is under the limit again
     // The automatic run down: the Run Down button pressed by itself, above the limit in force, on the charger, while holding,

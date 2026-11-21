@@ -55,6 +55,8 @@ private struct Stage: View {
         ("v3-1-above-limit", Snapshot(level: 94, plugged: true, charging: false, limit: 80, mode: .holding)),
         ("v4-auto-running-down", Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80, autoRun: true)),
         ("v4-look-two-hidden", { var x = Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding); x.settings.look.runDown = false; x.settings.look.sailing = false; x.settings.look.lowPower = false; return x }()),
+        ("v4-health-service", Snapshot(level: 80, plugged: true, charging: false, limit: 80, mode: .holding, keepsOnQuit: true, health: BatteryHealth(maxPercent: 76, cycles: 1012, service: true))),
+        ("v4-intel-needs-helper", Snapshot(level: 92, plugged: true, charging: true, limit: 80, mode: .needsHelper)),
         ("v3-2-running-down", Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)),
         ("v3-3-calibrating", Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)),
         ("v3-4-schedule", Snapshot(level: 93, plugged: true, charging: true, limit: 100, mode: .holding, scheduled: Scheduled(name: "Trip", until: Date().addingTimeInterval(30 * 3600), back: 80))),
@@ -76,7 +78,7 @@ private struct Stage: View {
     for dark in [false, true] {
         let tone = dark ? "dark" : "light"
         for (name, tab) in [("general", SettingsTab.general), ("schedules", .schedules), ("care", .care), ("look", .look), ("links", .links)] {
-            ok = save(SettingsView(s: KeeperSettings(schedules: [trip, wk], calibratedAt: start.addingTimeInterval(-20 * 86_400), calibEvery: 1), login: .enabled, tab: tab).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(name)-\(tone).png") && ok
+            ok = save(SettingsView(s: KeeperSettings(schedules: [trip, wk], calibratedAt: start.addingTimeInterval(-20 * 86_400), calibEvery: 1), health: BatteryHealth(maxPercent: 89, cycles: 190), login: .enabled, tab: tab).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(name)-\(tone).png") && ok
         }
         ok = save(ScheduleEditor(draft: trip, isNew: false, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-edit-\(tone).png") && ok
         ok = save(ScheduleEditor(draft: trip, isNew: true, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-\(tone).png") && ok

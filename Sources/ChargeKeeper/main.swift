@@ -116,6 +116,42 @@ func helperSelftest(_ expect: (Bool, String) -> Void) {
     expect(q.sync { led.v } == ledSystem, "socket: the app quitting gives the light back")
     withExtendedLifetime(lsrv) {}
     withExtendedLifetime((server, other)) {}
+
+    // Intel (mockup v4): the helper's BCLM limit, owned by the app's connection. Not run on Intel hardware (none here).
+    let bc = FakeSwitch(); bc.v = noLimit
+    let lmark = dir + "/limit"
+    func lexists() -> Bool { FileManager.default.fileExists(atPath: lmark) }
+    var lg = LimitGuard(bc, marker: lmark, lease: 150)
+    expect(lg.command(cmdCut, fd: 7, now: 0) == nil && lg.command(cmdLedDark, fd: 7, now: 0) == nil, "intel: the other commands pass through the limit guard")
+    expect(lg.command(limitCommand(60), fd: 7, now: 0) == replyDone && bc.v == 60 && lexists(), "intel: limit 60 set, marker written")
+    expect(lg.command(limitCommand(75), fd: 7, now: 30) == replyDone && bc.v == 75, "intel: a new limit")
+    lg.closed(8); expect(bc.v == 75, "intel: another connection closing changes nothing")
+    lg.closed(7); expect(bc.v == noLimit && !lexists(), "intel: the app quit, crashed or was killed: no limit")
+    _ = lg.command(limitCommand(70), fd: 7, now: 100); lg.tick(now: 200); expect(bc.v == 70, "intel: inside the check-in time the limit stays")
+    lg.tick(now: 251); expect(bc.v == noLimit && !lexists(), "intel: the app stopped checking in: no limit")
+    _ = lg.command(limitCommand(70), fd: 7, now: 300)
+    expect(lg.command(limitCommand(100), fd: 7, now: 301) == replyDone && bc.v == noLimit && !lexists(), "intel: 100 gives the limit back")
+    _ = lg.command(limitCommand(70), fd: 7, now: 300)
+    lg = LimitGuard(bc, marker: lmark)  // the helper died with our limit on, or the Mac restarted
+    expect(bc.v == noLimit && !lexists(), "intel: helper start with a limit of ours left: no limit")
+    bc.v = 80  // another app's limit, no marker of ours
+    lg = LimitGuard(bc, marker: lmark)
+    expect(bc.v == 80 && lg.command(limitCommand(60), fd: 7, now: 0) == replyBusy && bc.v == 80 && !lexists(), "intel: another app's limit is left alone")
+    lg.closed(7); lg.tick(now: 999); expect(bc.v == 80, "intel: closing and ticks never touch another app's limit")
+    bc.v = noLimit; bc.broken = true
+    expect(lg.command(limitCommand(60), fd: 7, now: 0) == replyErr && bc.v == noLimit, "intel: a refused write is an error")
+    bc.broken = false; _ = lg.command(limitCommand(60), fd: 7, now: 0); bc.broken = true; lg.closed(7)
+    expect(bc.v == 60 && lexists(), "intel: a failed give-back keeps the marker")
+    bc.broken = false; lg.tick(now: 1); expect(bc.v == noLimit && !lexists(), "intel: the next tick gives it back")
+    expect(LimitGuard(nil, marker: dir + "/limit2").command(limitCommand(60), fd: 7, now: 0) == replyErr, "apple chip: no BCLM key, a limit byte is an error")
+    let ibc = FakeSwitch(); ibc.v = noLimit
+    let isrv = HelperServer(q.sync { ChargerGuard(FakeSwitch(), marker: dir + "/cut6") }, queue: q, uid: getuid(), limits: q.sync { LimitGuard(ibc, marker: dir + "/limit3") })
+    expect(q.sync(execute: { isrv.start(path: dir + "/i.sock") }), "intel socket starts")
+    let ic = ChargerClient(path: dir + "/i.sock")
+    expect(ic.send(byte: limitCommand(65)) == replyDone && q.sync { ibc.v } == 65 && ic.send(byte: cmdCut) == replyCut, "intel socket: limit and cut on one helper")
+    ic.disconnect(); usleep(300_000)
+    expect(q.sync { ibc.v } == noLimit, "intel socket: the app's connection closing gives the limit back")
+    withExtendedLifetime(isrv) {}
 }
 
 // End to end: the real helper (--helper-fake, its own process) and a stand-in app (its own process) that cuts charger power
@@ -178,6 +214,25 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
            && linkAction(URL(string: "chargekeeper://lowpower/on")!) == .lowPower(true) && linkAction(URL(string: "chargekeeper://calibration/off")!) == .calibration(false)
            && linkAction(URL(string: "chargekeeper://heat")!) == nil && linkAction(URL(string: "chargekeeper://heat/maybe")!) == nil, "links for every switch")
     expect(linkExamples.allSatisfy { linkAction(URL(string: $0)!) != nil }, "every link shown in Settings works")
+    // Intel (mockup v4): the limit byte, the floor of 0 (BCLM holds any limit, no charger switch), the helper's replies.
+    expect(limitCommand(60) == 0x80 + 60 && limitValue(limitCommand(60)) == 60 && limitValue(limitCommand(100)) == 100 && limitCommand(62) == 0x80 + 60
+           && limitValue(cmdCut) == nil && limitValue(cmdLowOn) == nil && limitValue(0x80 + 49) == nil && limitValue(0x80 + 101) == nil, "intel: limit bytes never clash with the other commands")
+    expect([cmdCut, cmdOn, cmdDeep, cmdLowOn, cmdLowOff, cmdLedDark, cmdLedNormal].allSatisfy { $0 < cmdLimitBase }, "intel: every older command is under the limit bytes")
+    expect(helperLimitResult(replyDone) == .ok && helperLimitResult(nil) == .noHelper(old: false) && helperLimitResult(replyOn) == .noHelper(old: true)
+           && helperLimitResult(replyBusy) != .ok && helperLimitResult(replyErr) != .ok, "intel: the helper's replies")
+    var ic = Carry()
+    let i60 = decide(&ic, level: 70, external: true, tempF: nil, scheduled: nil, limit: 60, sailing: false, bottom: 55, heat: false, calibDue: false, floor: 0, lid: false)
+    expect(i60.plan == Plan(mac: 60, cut: false), "intel: 60% is the helper's limit, no charger switch")
+    ic = Carry()
+    expect(decide(&ic, level: 70, external: true, tempF: 99, scheduled: nil, limit: 80, sailing: false, bottom: 75, heat: true, calibDue: false, floor: 0, lid: false).plan == Plan(mac: 70, cut: false),
+           "intel: heat pause holds the limit at the level, on the charger")
+    ic = Carry(resting: true, lastTop: 90)
+    expect(decide(&ic, level: 88, external: true, tempF: nil, scheduled: nil, limit: 90, sailing: true, bottom: 70, heat: false, calibDue: false, floor: 0, lid: false).plan == Plan(mac: 70, cut: false),
+           "intel: sailing rests through the limit, not the charger switch")
+    ic = Carry(); _ = decide(&ic, level: 70, external: true, tempF: nil, scheduled: nil, limit: 60, sailing: false, bottom: 55, heat: false, calibDue: false, autoRunDown: true, holding: true, floor: 0, lid: false)
+    expect(ic.runDown == 60, "intel: the automatic run down works under 80 too (no charger switch brings it down there)")
+    expect(statusText(Snapshot(level: 92, plugged: true, charging: true, limit: 80, mode: .needsHelper)) == "Charging" && notHolding(.needsHelper) && !isCharging(Snapshot(level: 92, plugged: true, charging: true, limit: 80, mode: .needsHelper)),
+           "intel without the helper: level only, plain Quit")
     // One step's decision (decide), the part of the work queue's step that has no hardware in it.
     func step(_ c: inout Carry, _ level: Int?, plugged: Bool? = true, sched: Int? = nil, limit: Int = 80, due: Bool = false, lid: Bool = false) -> (top: Int, plan: Plan, filling: Bool, calibDone: Bool) {
         decide(&c, level: level, external: plugged, tempF: nil, scheduled: sched, limit: limit, sailing: false, bottom: 75, heat: false, calibDue: due, lid: lid)
@@ -231,6 +286,15 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     r = Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)
     expect(statusText(r) == "Calibrating, step 2 of 3", "calibration status")
     expect(statusText(Snapshot(level: 94, plugged: true, charging: false, limit: 80, mode: .holding)) == "Above 80%, not charging", "above the limit on the charger")
+    // Battery health (mockup v4). John's M2 on 2026-11-21: 4045 / 4563 mAh, System Settings says 89%.
+    let m2: [String: Any] = ["MaxCapacity": 100, "CycleCount": 190, "BatteryData": ["AppleRawMaxCapacity": 4045, "FullChargeCapacity": 4045, "DesignCapacity": 4563, "NominalChargeCapacity": 4172]]
+    expect(healthPercent(m2) == 89, "health: Apple chip, from BatteryData, rounded as System Settings (not NominalChargeCapacity)")
+    expect(healthPercent(["MaxCapacity": 100, "BatteryData": ["FullChargeCapacity": 4045, "DesignCapacity": 4563]]) == 89, "health: FullChargeCapacity when the raw key is missing")
+    expect(healthPercent(["MaxCapacity": 5103, "DesignCapacity": 5800, "AppleRawMaxCapacity": 5103]) == 88 && healthPercent(["MaxCapacity": 5103, "DesignCapacity": 5800]) == 88, "health: Intel, mAh at the top level")
+    expect(healthPercent(["MaxCapacity": 100]) == nil && healthPercent(["MaxCapacity": 100, "DesignCapacity": 0]) == nil, "health: a percent MaxCapacity or no design capacity is not a reading")
+    expect(healthPercent(["BatteryData": ["AppleRawMaxCapacity": 4700, "DesignCapacity": 4563]]) == 100, "health: a new battery over its design shows 100%")
+    expect(!needsService(health: nil, condition: nil) && !needsService(health: "Good", condition: "") && needsService(health: "Good", condition: "Check Battery")
+           && needsService(health: nil, condition: "Permanent Battery Failure") && needsService(health: "Poor", condition: nil), "health: service only when macOS says so")
 }
 
 func selftest() -> Int32 {
@@ -367,6 +431,8 @@ case "--probe":
     let bt = battery()
     print("charger switch: \(chargerSwitch()?.key ?? "none found")  magsafe light: \(SMCSwitch(key: "ACLC") != nil)")
     print("battery: level=\(bt.current.map(String.init) ?? "?") temperature=\(bt.tempF.map(degrees) ?? "?")")
+    let h = readHealth()
+    print("health: max capacity=\(h.maxPercent.map { "\($0)%" } ?? "?") cycles=\(h.cycles.map(String.init) ?? "?") service=\(h.service)")
 case "--restore":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(2) }
     let ok = restore(m, LimitState(enabled: false, limit: 100))

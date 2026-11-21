@@ -7,14 +7,14 @@ struct SettingsHost: View {
     @State private var login = SMAppService.mainApp.status
     @State private var loginRefused = false
     var body: some View {
-        SettingsView(s: keeper.snap.settings, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
+        SettingsView(s: keeper.snap.settings, health: keeper.snap.health, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
                      login: login, setLogin: { on in
                          UserDefaults.standard.set(true, forKey: "loginItemAsked")  // the user's own choice: never re-added at launch
                          try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
                          login = SMAppService.mainApp.status
                          loginRefused = on ? !(login == .enabled || login == .requiresApproval) : login == .enabled  // waiting for approval is not a refusal
                      }, loginRefused: loginRefused)
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in login = SMAppService.mainApp.status; loginRefused = false }  // the window is reused (onAppear runs once); System Settings may have changed it meanwhile
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in login = SMAppService.mainApp.status; loginRefused = false; keeper.refreshHealth() }  // the window is reused (onAppear runs once); System Settings may have changed it meanwhile
     }
 }
 
@@ -44,6 +44,7 @@ func scheduleLine(_ x: Schedule) -> String {
 
 struct SettingsView: View {
     let s: KeeperSettings
+    var health: BatteryHealth? = nil
     var change: (@escaping (inout KeeperSettings) -> Void) -> Void = { _ in }
     var startCalibration: () -> Void = {}
     var canCalibrate = true
@@ -137,6 +138,18 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var careSection: some View {
+            Section("Battery health") {
+                LabeledContent("Maximum capacity") {
+                    HStack(spacing: 8) {
+                        if let p = health?.maxPercent { Gauge(value: Double(p), in: 0...100) {}.gaugeStyle(.linearCapacity).frame(width: 70).accessibilityHidden(true) }
+                        Text(health?.maxPercent.map { "\($0)%" } ?? "Not known").monospacedDigit()
+                    }
+                }
+                LabeledContent("Condition", value: health.map { $0.service ? "Service Recommended" : "Normal" } ?? "Not known")
+                LabeledContent("Charge cycles", value: health?.cycles.map(String.init) ?? "Not known")
+                Text("How much the battery holds now compared with when it was new. Same numbers as System Settings, Battery, Battery Health.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             Section("Battery Care") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -160,14 +173,16 @@ struct SettingsView: View {
             }
     }
 
+    // One field per change, applied to the latest settings: a whole copy could undo a click made a moment before.
+    private func look<T>(_ k: WritableKeyPath<Look, T>) -> Binding<T> { Binding(get: { s.look[keyPath: k] }, set: { v in change { $0.look[keyPath: k] = v } }) }
+
     // Mockup v4, Look.
     @ViewBuilder private var lookSection: some View {
-        let look = Binding(get: { s.look }, set: { v in change { $0.look = v } })
         Section("Menu bar icon") {
             HStack(spacing: 8) {
                 ForEach(IconStyle.allCases, id: \.self) { style in
                     let on = s.look.icon == style
-                    Button { look.wrappedValue.icon = style } label: {
+                    Button { change { $0.look.icon = style } } label: {
                         VStack(spacing: 6) {
                             Image(nsImage: makeIcon(style, level: 80)).renderingMode(.template).frame(height: 15)
                             Text(iconStyleName(style)).font(.caption).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
@@ -179,29 +194,32 @@ struct SettingsView: View {
                     .buttonStyle(.plain).accessibilityLabel(iconStyleName(style)).accessibilityAddTraits(on ? .isSelected : [])
                 }
             }
-            Toggle(isOn: look.sweep) {
+            Toggle(isOn: look(\.sweep)) {
                 Text("Charging animation")
                 Text("The green sweep while charging. Off: a still picture.")
             }
         }
         Section("Show in the panel") {
-            Toggle("Charge to Full Once button", isOn: look.full).toggleStyle(.checkbox)
-            Toggle("Run Down button (when above the limit)", isOn: look.runDown).toggleStyle(.checkbox)
-            Toggle("Heat pause switch", isOn: look.heat).toggleStyle(.checkbox)
-            Toggle("Sailing range switch", isOn: look.sailing).toggleStyle(.checkbox)
-            Toggle("Low Power Mode switch", isOn: look.lowPower).toggleStyle(.checkbox)
+            Toggle("Charge to Full Once button", isOn: look(\.full)).toggleStyle(.checkbox)
+            Toggle("Run Down button (when above the limit)", isOn: look(\.runDown)).toggleStyle(.checkbox)
+            Toggle("Heat pause switch", isOn: look(\.heat)).toggleStyle(.checkbox)
+            Toggle("Sailing range switch", isOn: look(\.sailing)).toggleStyle(.checkbox)
+            Toggle("Low Power Mode switch", isOn: look(\.lowPower)).toggleStyle(.checkbox)
             Text("Hidden ones keep working; you change them here instead. The level, the limit slider and warnings always show.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
     @ViewBuilder private var linksSection: some View {
-            Section("Shortcuts and Links") {
-                Text("These links work in the Shortcuts app (its Open URLs action), in scripts or as a bookmark. Siri runs a shortcut by its name.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                ForEach(linkExamples, id: \.self) { l in
-                    Text(l).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            // Mockup v4: the Shortcuts app's actions, then the links.
+            Section("In the Shortcuts app and Siri") {
+                ForEach(shortcutActions, id: \.name) { a in
+                    LabeledContent(a.name) { Text(a.hint).font(.caption).foregroundStyle(.secondary) }
                 }
+            }
+            Section("Links") {
+                Text("The same, for scripts or a bookmark:").font(.caption).foregroundStyle(.secondary)
+                Text(linkExamples.joined(separator: " · ")).font(.system(.caption, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
     }
 }
