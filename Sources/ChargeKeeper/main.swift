@@ -216,7 +216,8 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     expect(linkExamples.allSatisfy { linkAction(URL(string: $0)!) != nil }, "every link shown in Settings works")
     // Intel (mockup v4): the limit byte, the floor of 0 (BCLM holds any limit, no charger switch), the helper's replies.
     expect(limitCommand(60) == 0x80 + 60 && limitValue(limitCommand(60)) == 60 && limitValue(limitCommand(100)) == 100 && limitCommand(62) == 0x80 + 60
-           && limitValue(cmdCut) == nil && limitValue(cmdLowOn) == nil && limitValue(0x80 + 49) == nil && limitValue(0x80 + 101) == nil, "intel: limit bytes never clash with the other commands")
+           && limitValue(cmdCut) == nil && limitValue(cmdLowOn) == nil && limitValue(0x80 + 39) == nil && limitValue(0x80 + 101) == nil, "intel: limit bytes never clash with the other commands")
+    expect(bottomRange(50).lowerBound >= limitBytes.lowerBound && limitValue(limitCommand(bottomRange(50).lowerBound)) == UInt8(bottomRange(50).lowerBound), "intel: the lowest sailing bottom fits a limit byte")
     expect([cmdCut, cmdOn, cmdDeep, cmdLowOn, cmdLowOff, cmdLedDark, cmdLedNormal].allSatisfy { $0 < cmdLimitBase }, "intel: every older command is under the limit bytes")
     expect(helperLimitResult(replyDone) == .ok && helperLimitResult(nil) == .noHelper(old: false) && helperLimitResult(replyOn) == .noHelper(old: true)
            && helperLimitResult(replyBusy) != .ok && helperLimitResult(replyErr) != .ok, "intel: the helper's replies")

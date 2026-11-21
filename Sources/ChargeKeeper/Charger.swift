@@ -32,8 +32,9 @@ let ledSystem: UInt8 = 0x00, ledOff: UInt8 = 0x01  // the SMC key ACLC (MagSafe 
 // limit, cmdLimitBase + percent; 100 gives the limit back. An older helper reads these bytes as "power on" (answers O or B, never Y).
 let cmdLimitBase: UInt8 = 0x80, noLimit: UInt8 = 100
 let helperLimitMarker = "/var/db/com.johnhesch.keeper.helper.limit"  // exists exactly while a limit of ours may be on
-func limitCommand(_ v: Int) -> UInt8 { cmdLimitBase + UInt8(clampLimit(v)) }
-func limitValue(_ c: UInt8) -> UInt8? { c >= cmdLimitBase + UInt8(limitRange.lowerBound) && c <= cmdLimitBase + noLimit ? c - cmdLimitBase : nil }
+let limitBytes = 40...100  // the slider's 50...100, and a sailing range's bottom down to 40 (bottomRange)
+func limitCommand(_ v: Int) -> UInt8 { cmdLimitBase + UInt8(clamp5(v, limitBytes)) }
+func limitValue(_ c: UInt8) -> UInt8? { c >= cmdLimitBase + UInt8(limitBytes.lowerBound) && c <= cmdLimitBase + noLimit ? c - cmdLimitBase : nil }
 // Apple chips or Intel, as the hardware is (a copy under Rosetta still counts as an Apple chip).
 let intelMac: Bool = { var v: Int32 = 0, n = MemoryLayout<Int32>.size; return sysctlbyname("hw.optional.arm64", &v, &n, nil, 0) != 0 || v == 0 }()
 
