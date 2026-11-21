@@ -168,7 +168,7 @@ struct Panel: View {
                     on: s.sailing, set: act.sailing)
         }
         if look.lowPower {
-            Setting(title: "Low Power Mode", hint: s.helperOld ? "Needs the charger helper updated." : "The Mac's own energy saver. \(s.lowPower ? "On" : "Off") now.",
+            Setting(title: "Low Power Mode", hint: s.helperOld ? helperOldNote : "The Mac's own energy saver. \(s.lowPower ? "On" : "Off") now.",
                     on: s.lowPower, set: act.lowPower)
         }
         if s.helperOld && s.cutNote != .oldHelper { helperButton(update: true) }
@@ -185,6 +185,8 @@ struct Panel: View {
         if helperFailed { Text("That did not work. Check that Charge Keeper is in Applications, then try again.").font(.caption).foregroundStyle(.secondary) }
     }
 }
+
+let helperOldNote = "Needs the charger helper updated."  // shared with Settings, Look
 
 struct Setting: View {
     let title: String, hint: String, on: Bool

@@ -7,7 +7,7 @@ struct SettingsHost: View {
     @State private var login = SMAppService.mainApp.status
     @State private var loginRefused = false
     var body: some View {
-        SettingsView(s: keeper.snap.settings, health: keeper.snap.health, switches: PanelSwitches(heat: keeper.snap.heatOn, sailing: keeper.snap.sailing, lowPower: keeper.snap.lowPower),
+        SettingsView(s: keeper.snap.settings, health: keeper.snap.health, switches: PanelSwitches(heat: keeper.snap.heatOn, sailing: keeper.snap.sailing, lowPower: keeper.snap.lowPower, helperOld: keeper.snap.helperOld),
                      setHeat: keeper.setHeat, setSailing: keeper.setSailing, setLowPower: keeper.setLowPower, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
                      login: login, setLogin: { on in
                          UserDefaults.standard.set(true, forKey: "loginItemAsked")  // the user's own choice: never re-added at launch
@@ -19,7 +19,7 @@ struct SettingsHost: View {
     }
 }
 
-struct PanelSwitches: Equatable { var heat = false, sailing = false, lowPower = false }
+struct PanelSwitches: Equatable { var heat = false, sailing = false, lowPower = false, helperOld = false }
 
 enum SettingsTab: Hashable { case general, schedules, care, look, links }
 
@@ -178,8 +178,11 @@ struct SettingsView: View {
             }
     }
 
-    private func hiddenSwitch(_ title: String, on: Bool, set: @escaping (Bool) -> Void) -> some View {
-        Toggle(title, isOn: Binding(get: { on }, set: set)).toggleStyle(.switch).controlSize(.mini).padding(.leading, 22)
+    private func hiddenSwitch(_ title: String, on: Bool, note: String? = nil, set: @escaping (Bool) -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle(title, isOn: Binding(get: { on }, set: set)).toggleStyle(.switch).controlSize(.mini)
+            if let note { Text(note).font(.caption).foregroundStyle(.secondary) }
+        }.padding(.leading, 22)
     }
 
     // One field per change, applied to the latest settings: a whole copy could undo a click made a moment before.
@@ -217,7 +220,7 @@ struct SettingsView: View {
             Toggle("Sailing range switch", isOn: look(\.sailing)).toggleStyle(.checkbox)
             if !s.look.sailing { hiddenSwitch("Sailing range", on: switches.sailing, set: setSailing) }
             Toggle("Low Power Mode switch", isOn: look(\.lowPower)).toggleStyle(.checkbox)
-            if !s.look.lowPower { hiddenSwitch("Low Power Mode", on: switches.lowPower, set: setLowPower) }
+            if !s.look.lowPower { hiddenSwitch("Low Power Mode", on: switches.lowPower, note: switches.helperOld ? helperOldNote : nil, set: setLowPower) }
             Text("Hidden ones keep working; you change them here instead. The level, the limit slider and warnings always show.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
