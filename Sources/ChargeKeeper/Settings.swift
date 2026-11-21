@@ -1,14 +1,34 @@
 // Mockup v3 panel 5 and 6: the Settings window and the schedule sheet. Everything set once and left alone lives here.
 import SwiftUI
+import ServiceManagement
 
 struct SettingsHost: View {
     @ObservedObject var keeper: Keeper
+    @State private var login = SMAppService.mainApp.status
+    @State private var loginRefused = false
     var body: some View {
-        SettingsView(s: keeper.snap.settings, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0)
+        SettingsView(s: keeper.snap.settings, health: keeper.snap.health, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
+                     login: login, setLogin: { on in
+                         UserDefaults.standard.set(true, forKey: "loginItemAsked")  // the user's own choice: never re-added at launch
+                         try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
+                         login = SMAppService.mainApp.status
+                         loginRefused = on ? !(login == .enabled || login == .requiresApproval) : login == .enabled  // waiting for approval is not a refusal
+                     }, loginRefused: loginRefused)
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in login = SMAppService.mainApp.status; loginRefused = false; keeper.refreshHealth() }  // the window is reused (onAppear runs once); System Settings may have changed it meanwhile
     }
 }
 
+enum SettingsTab: Hashable { case general, schedules, care, look, links }
+
 func limitText(_ v: Int) -> String { "\(v)%" }
+func iconStyleName(_ s: IconStyle) -> String {
+    switch s {
+    case .numberInBattery: return "Number in battery (today)"
+    case .battery: return "Battery only"
+    case .batteryAndNumber: return "Battery and number"
+    case .number: return "Number only"
+    }
+}
 func repeatText(_ d: Set<Int>) -> String {
     switch d {
     case []: return "once"
@@ -19,24 +39,69 @@ func repeatText(_ d: Set<Int>) -> String {
 }
 func scheduleLine(_ x: Schedule) -> String {
     let f: Date.FormatStyle = x.days.isEmpty ? .dateTime.weekday(.abbreviated).hour().minute() : .dateTime.hour().minute()
-    return "charge to \(limitText(x.limit)) · \(x.from.formatted(f)) to \(x.until.formatted(f)), \(repeatText(x.days))"
+    return "charge up to \(limitText(x.limit)) · \(x.from.formatted(f)) to \(x.until.formatted(f)), \(repeatText(x.days))"
 }
 
 struct SettingsView: View {
-    let s: Settings
-    var change: (@escaping (inout Settings) -> Void) -> Void = { _ in }
+    let s: KeeperSettings
+    var health: BatteryHealth? = nil
+    var change: (@escaping (inout KeeperSettings) -> Void) -> Void = { _ in }
     var startCalibration: () -> Void = {}
     var canCalibrate = true
+    var login = SMAppService.Status.notRegistered
+    var setLogin: (Bool) -> Void = { _ in }
+    var loginRefused = false
+    @State var tab = SettingsTab.general
     @State private var editing: Schedule?
 
     var body: some View {
-        Form {
+        VStack(spacing: 0) {
+            // A segmented switch rather than a TabView: same look, and it draws in the off-screen pictures too.
+            Picker("Section", selection: $tab) {
+                Text("General").tag(SettingsTab.general); Text("Schedules").tag(SettingsTab.schedules)
+                Text("Battery Care").tag(SettingsTab.care); Text("Look").tag(SettingsTab.look); Text("Shortcuts").tag(SettingsTab.links)
+            }.pickerStyle(.segmented).labelsHidden().fixedSize()
+            Form {
+                switch tab {
+                case .general:
+                    Section {
+                        Toggle(isOn: Binding(get: { login == .enabled || login == .requiresApproval }, set: setLogin)) {
+                            Text("Start at login")
+                            Text(loginRefused ? "macOS did not take the change. Try System Settings, General, Login Items." : login == .requiresApproval ? "Waiting for your OK in System Settings, General, Login Items." : "Opens Charge Keeper when you log in to your Mac.")
+                        }
+                    }
+                    Section {
+                        Toggle(isOn: Binding(get: { s.autoRunDown }, set: { v in change { $0.autoRunDown = v } })) {
+                            Text("Run down to my limit by itself")
+                            Text("When the battery is above your limit and the charger is plugged in, the Mac runs on its battery down to the limit, then goes back to the charger. Same as the \"Run Down\" button, without pressing it.")
+                        }
+                        Text("It waits while a calibration, a schedule or \"Charge to Full Once\" is running, and while the lid is closed.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    quitSection
+                case .schedules: schedulesSection
+                case .care: careSection
+                case .look: lookSection
+                case .links: linksSection
+                }
+            }.formStyle(.grouped)
+        }
+        .padding(.top, 8).frame(width: 460, height: 520)  // fixed: every tab fits, so the window keeps one size
+        .sheet(item: $editing) { x in
+            ScheduleEditor(draft: x, isNew: !s.schedules.contains { $0.id == x.id },
+                           save: { new in change { st in if let i = st.schedules.firstIndex(where: { $0.id == new.id }) { st.schedules[i] = new } else { st.schedules.append(new) } }; editing = nil },
+                           delete: { id in change { $0.schedules.removeAll { $0.id == id } }; editing = nil },
+                           cancel: { editing = nil })
+        }
+    }
+
+    @ViewBuilder private var schedulesSection: some View {
             Section("Schedules") {
                 ForEach(s.schedules) { x in
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) { Text(x.name).bold(); Text(scheduleLine(x)).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 2) { Text(x.name); Text(scheduleLine(x)).font(.caption).foregroundStyle(.secondary) }
                         Spacer()
-                        Button("Edit") { editing = x }.buttonStyle(.link)
+                        Button("Edit") { editing = x }.buttonStyle(.link).accessibilityLabel("Edit \(x.name)")
                         Toggle(x.name, isOn: Binding(get: { x.on }, set: { on in change { st in if let i = st.schedules.firstIndex(where: { $0.id == x.id }) { st.schedules[i].on = on } } }))
                             .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                     }
@@ -45,13 +110,13 @@ struct SettingsView: View {
                     ForEach(calibEveryChoices, id: \.self) { m in Text(m == 0 ? "Off" : m == 1 ? "Every month" : "Every \(m) months").tag(m) }
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Calibration cycle")
-                        Text(nextCalibration(months: s.calibEvery, last: s.calibratedAt, since: s.calibSince).map { $0 <= Date() ? "Due now: starts once plugged in." : "Next: \($0.formatted(date: .abbreviated, time: .omitted)) or later, once plugged in." } ?? "Runs only when you press Start under Battery care.")
+                        Text("Automatic calibration")
+                        Text(nextCalibration(months: s.calibEvery, last: s.calibratedAt, since: s.calibSince).map { $0 <= Date() ? "Due now: starts once plugged in." : "Next: \($0.formatted(date: .abbreviated, time: .omitted)) or later, once plugged in." } ?? "Off: runs only when you press Start Calibration under Battery Care.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 HStack {
-                    Button("Add schedule…") {
+                    Button("Add Schedule…") {
                         let start = Calendar.current.date(bySettingHour: 7, minute: 0, second: 0, of: Date().addingTimeInterval(86_400)) ?? Date()
                         editing = Schedule(name: "", limit: 100, from: start, until: start.addingTimeInterval(11 * 3600))
                     }
@@ -59,15 +124,33 @@ struct SettingsView: View {
                     Text("Outside a schedule, your slider limit applies.").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("When Charge Keeper quits") {
+    }
+
+    @ViewBuilder private var quitSection: some View {
+            Section("When Charge Keeper Quits") {
                 Picker("When Charge Keeper quits", selection: Binding(get: { s.keepOnQuit }, set: { v in change { $0.keepOnQuit = v } })) {
                     Text("Charging goes back to normal").tag(false)
                     Text("Keep my limit").tag(true)
                 }.pickerStyle(.radioGroup).labelsHidden()
-                Text("Keep my limit works for limits of 80% and up: the Mac holds those by itself. Limits under 80% always need Charge Keeper running.")
+                Text("Keep my limit works for limits of \(macFloor)% and up: the Mac holds those by itself. Limits under \(macFloor)% always need Charge Keeper running.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Section("Battery care") {
+    }
+
+    @ViewBuilder private var careSection: some View {
+            Section("Battery health") {
+                LabeledContent("Maximum capacity") {
+                    HStack(spacing: 8) {
+                        if let p = health?.maxPercent { Gauge(value: Double(p), in: 0...100) {}.gaugeStyle(.linearCapacity).frame(width: 70).accessibilityHidden(true) }
+                        Text(health?.maxPercent.map { "\($0)%" } ?? "Not known").monospacedDigit()
+                    }
+                }
+                LabeledContent("Condition", value: health.map { $0.service ? "Service Recommended" : "Normal" } ?? "Not known")
+                LabeledContent("Charge cycles", value: health?.cycles.map(String.init) ?? "Not known")
+                Text("How much the battery holds now compared with when it was new. Same numbers as System Settings, Battery, Battery Health.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Section("Battery Care") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Calibration cycle")
@@ -75,7 +158,7 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
-                    Button("Start") { startCalibration() }.disabled(!canCalibrate)
+                    Button("Start Calibration") { startCalibration() }.disabled(!canCalibrate)
                 }
                 Picker(selection: Binding(get: { s.led }, set: { v in change { $0.led = v } })) {
                     Text("Normal").tag(LedMode.normal)
@@ -88,21 +171,56 @@ struct SettingsView: View {
                     }
                 }
             }
-            Section("Shortcuts and links") {
-                Text("These links work in the Shortcuts app (its Open URLs action), in scripts or as a bookmark. Siri runs a shortcut by its name.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                ForEach(["chargekeeper://limit/80", "chargekeeper://full", "chargekeeper://rundown"], id: \.self) { l in
-                    Text(l).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+    }
+
+    // One field per change, applied to the latest settings: a whole copy could undo a click made a moment before.
+    private func look<T>(_ k: WritableKeyPath<Look, T>) -> Binding<T> { Binding(get: { s.look[keyPath: k] }, set: { v in change { $0.look[keyPath: k] = v } }) }
+
+    // Mockup v4, Look.
+    @ViewBuilder private var lookSection: some View {
+        Section("Menu bar icon") {
+            HStack(spacing: 8) {
+                ForEach(IconStyle.allCases, id: \.self) { style in
+                    let on = s.look.icon == style
+                    Button { change { $0.look.icon = style } } label: {
+                        VStack(spacing: 6) {
+                            Image(nsImage: makeIcon(style, level: 80)).renderingMode(.template).frame(height: 15)
+                            Text(iconStyleName(style)).font(.caption).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 56).padding(.vertical, 6).contentShape(Rectangle())
+                        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(on ? Color.accentColor : Color.primary.opacity(0.2), lineWidth: on ? 2 : 1))
+                    }
+                    .buttonStyle(.plain).accessibilityLabel(iconStyleName(style)).accessibilityAddTraits(on ? .isSelected : [])
                 }
             }
+            Toggle(isOn: look(\.sweep)) {
+                Text("Charging animation")
+                Text("The green sweep while charging. Off: a still picture.")
+            }
         }
-        .formStyle(.grouped).frame(width: 460).frame(minHeight: 640)  // a grouped Form scrolls, so without a height its window opens as a bare title bar
-        .sheet(item: $editing) { x in
-            ScheduleEditor(draft: x, isNew: !s.schedules.contains { $0.id == x.id },
-                           save: { new in change { st in if let i = st.schedules.firstIndex(where: { $0.id == new.id }) { st.schedules[i] = new } else { st.schedules.append(new) } }; editing = nil },
-                           delete: { id in change { $0.schedules.removeAll { $0.id == id } }; editing = nil },
-                           cancel: { editing = nil })
+        Section("Show in the panel") {
+            Toggle("Charge to Full Once button", isOn: look(\.full)).toggleStyle(.checkbox)
+            Toggle("Run Down button (when above the limit)", isOn: look(\.runDown)).toggleStyle(.checkbox)
+            Toggle("Heat pause switch", isOn: look(\.heat)).toggleStyle(.checkbox)
+            Toggle("Sailing range switch", isOn: look(\.sailing)).toggleStyle(.checkbox)
+            Toggle("Low Power Mode switch", isOn: look(\.lowPower)).toggleStyle(.checkbox)
+            Text("Hidden ones keep working; you change them here instead. The level, the limit slider and warnings always show.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    @ViewBuilder private var linksSection: some View {
+            // Mockup v4: the Shortcuts app's actions, then the links.
+            Section("In the Shortcuts app and Siri") {
+                ForEach(shortcutActions, id: \.name) { a in
+                    LabeledContent(a.name) { Text(a.hint).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            Section("Links") {
+                Text("The same, for scripts or a bookmark:").font(.caption).foregroundStyle(.secondary)
+                Text(linkExamples.joined(separator: " · ")).font(.system(.caption, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
     }
 }
 
@@ -111,6 +229,7 @@ func repeatKind(_ d: Set<Int>) -> RepeatKind { d.isEmpty ? .once : d == everyDay
 
 struct ScheduleEditor: View {
     @State var draft: Schedule
+    @State private var askDelete = false
     let isNew: Bool
     let save: (Schedule) -> Void, delete: (UUID) -> Void, cancel: () -> Void
     @State private var kind: RepeatKind
@@ -121,8 +240,9 @@ struct ScheduleEditor: View {
     var body: some View {
         let parts: DatePickerComponents = kind == .once ? [.date, .hourAndMinute] : .hourAndMinute
         Form {
+            Section {
             TextField("Name", text: $draft.name, prompt: Text("Trip"))
-            Picker("Charge to", selection: $draft.limit) { ForEach(Array(stride(from: limitRange.lowerBound, through: limitRange.upperBound, by: 5)), id: \.self) { Text(limitText($0)).tag($0) } }
+            Picker("Charge up to", selection: $draft.limit) { ForEach(Array(stride(from: limitRange.lowerBound, through: limitRange.upperBound, by: 5)), id: \.self) { Text(limitText($0)).tag($0) } }
             Picker("Repeat", selection: $kind) {
                 Text("Once").tag(RepeatKind.once); Text("Every day").tag(RepeatKind.everyDay)
                 Text("Weekdays").tag(RepeatKind.weekdays); Text("Chosen days").tag(RepeatKind.chosen)
@@ -139,7 +259,7 @@ struct ScheduleEditor: View {
                 HStack {
                     ForEach(1...7, id: \.self) { d in
                         Toggle(Calendar.current.veryShortWeekdaySymbols[d - 1], isOn: Binding(get: { draft.days.contains(d) }, set: { on in if on { draft.days.insert(d) } else if draft.days.count > 1 { draft.days.remove(d) } }))
-                            .toggleStyle(.button)
+                            .toggleStyle(.button).accessibilityLabel(Calendar.current.weekdaySymbols[d - 1])
                     }
                 }
             }
@@ -148,7 +268,8 @@ struct ScheduleEditor: View {
             Text(kind == .once ? "A Once schedule turns itself off when it ends." : "An end time before the start time runs past midnight.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
-                if !isNew { Button("Delete", role: .destructive) { delete(draft.id) } }
+                if !isNew { Button("Delete", role: .destructive) { askDelete = true }
+                    .confirmationDialog("Delete \"\(draft.name)\"?", isPresented: $askDelete) { Button("Delete", role: .destructive) { delete(draft.id) } } }
                 Spacer()
                 Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
                 Button(isNew ? "Add" : "Save") {
@@ -159,6 +280,7 @@ struct ScheduleEditor: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(kind == .once && draft.until <= draft.from)
             }
+            } header: { Text(isNew ? "New Schedule" : "Edit Schedule").font(.headline) }
         }
         .formStyle(.grouped).frame(width: 360).frame(minHeight: 308)
     }

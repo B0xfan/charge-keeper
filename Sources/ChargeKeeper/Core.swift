@@ -2,6 +2,7 @@
 // proven in Phase 1 to work as a normal user. Original code. No charging-chip key is ever written.
 import Foundation
 import IOKit
+import IOKit.ps
 import notify
 
 // MARK: - PowerUI client (private framework, reached by method address because it has no public header)
@@ -94,6 +95,45 @@ func battery() -> Battery {
     defer { IOObjectRelease(svc) }
     func p(_ k: String) -> NSNumber? { IORegistryEntryCreateCFProperty(svc, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber }
     return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: p("CurrentCapacity")?.intValue, tempF: fahrenheit(centiC: batteryTempCentiC(svc)))  // CurrentCapacity is a percent on Apple silicon (MaxCapacity reads 100)
+}
+
+// MARK: - battery health (mockup v4, what System Settings > Battery > Battery Health shows)
+
+struct BatteryHealth: Equatable { var maxPercent: Int?; var cycles: Int?; var service = false }
+
+// Maximum capacity: the full charge now against the design capacity, rounded like System Settings (4045 / 4563 = 88.6 -> 89%).
+// Apple chips keep both in mAh in BatteryData (MaxCapacity at the top is a percent there); Intel Macs at the top level, in mAh.
+// NominalChargeCapacity does not match System Settings, so it is never used.
+func healthPercent(_ props: [String: Any]) -> Int? {
+    func n(_ d: [String: Any]?, _ k: String) -> Int? { (d?[k] as? NSNumber)?.intValue }
+    let data = props["BatteryData"] as? [String: Any]
+    let topMax = n(props, "MaxCapacity").flatMap { $0 > 100 ? $0 : nil }  // over 100 it is mAh (Intel), not a percent
+    guard let full = n(data, "AppleRawMaxCapacity") ?? n(data, "FullChargeCapacity") ?? n(props, "AppleRawMaxCapacity") ?? topMax,
+          let design = n(data, "DesignCapacity") ?? n(props, "DesignCapacity"), full > 0, design > 0 else { return nil }
+    return min(100, Int((Double(full) * 100 / Double(design)).rounded()))
+}
+// Apple's power-source keys (IOPSKeys.h): a condition ("Check Battery", "Permanent Battery Failure") is published only when
+// the battery needs a repair service; BatteryHealth "Poor" means it cannot provide power. Neither: Normal.
+func needsService(health: String?, condition: String?) -> Bool { !(condition ?? "").isEmpty || health == "Poor" }
+
+// Read rarely (Keeper: once an hour and when Settings opens), never every step.
+func readHealth() -> BatteryHealth {
+    var h = BatteryHealth()
+    let svc = IOServiceGetMatchingService(0, IOServiceMatching("AppleSmartBattery"))
+    if svc != 0 {
+        defer { IOObjectRelease(svc) }
+        var props: Unmanaged<CFMutableDictionary>?
+        if IORegistryEntryCreateCFProperties(svc, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS, let d = props?.takeRetainedValue() as? [String: Any] {
+            h.maxPercent = healthPercent(d); h.cycles = (d["CycleCount"] as? NSNumber)?.intValue
+        }
+    }
+    let info = IOPSCopyPowerSourcesInfo().takeRetainedValue()
+    for src in IOPSCopyPowerSourcesList(info).takeRetainedValue() as NSArray {
+        guard let d = IOPSGetPowerSourceDescription(info, src as CFTypeRef)?.takeUnretainedValue() as? [String: Any],
+              d[kIOPSTypeKey] as? String == kIOPSInternalBatteryType else { continue }
+        h.service = needsService(health: d[kIOPSBatteryHealthKey] as? String, condition: d[kIOPSBatteryHealthConditionKey] as? String)
+    }
+    return h
 }
 
 // macOS sets this flag while it charges past the limit to full on its own, about every few weeks, to re-measure the battery

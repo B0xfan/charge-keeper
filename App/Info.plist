@@ -2,19 +2,36 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key><string>com.johnhesch.keeper</string>
-    <key>CFBundleName</key><string>Charge Keeper</string>
-    <key>CFBundleDisplayName</key><string>Charge Keeper</string>
-    <key>CFBundleExecutable</key><string>ChargeKeeper</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.2</string>
-    <key>CFBundleVersion</key><string>4</string>
-    <key>LSMinimumSystemVersion</key><string>14.0</string>
-    <key>LSUIElement</key><true/>
-    <key>CFBundleURLTypes</key><array><dict>
-        <key>CFBundleURLName</key><string>com.johnhesch.keeper.link</string>
-        <key>CFBundleURLSchemes</key><array><string>chargekeeper</string></array>
-    </dict></array>
-    <key>NSHumanReadableCopyright</key><string>John Hesch</string>
+	<key>CFBundleDisplayName</key>
+	<string>Charge Keeper</string>
+	<key>CFBundleExecutable</key>
+	<string>ChargeKeeper</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.johnhesch.keeper</string>
+	<key>CFBundleName</key>
+	<string>Charge Keeper</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.3.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.johnhesch.keeper.link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>chargekeeper</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>7</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>John Hesch</string>
 </dict>
 </plist>

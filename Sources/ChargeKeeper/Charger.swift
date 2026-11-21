@@ -27,6 +27,17 @@ let cmdLowOn = UInt8(ascii: "L"), cmdLowOff = UInt8(ascii: "l"), cmdLedDark = UI
 let replyCut = UInt8(ascii: "C"), replyOn = UInt8(ascii: "O"), replyBusy = UInt8(ascii: "B"), replyErr = UInt8(ascii: "E"), replyDone = UInt8(ascii: "Y")
 let ledSystem: UInt8 = 0x00, ledOff: UInt8 = 0x01  // the SMC key ACLC (MagSafe light): 0 = macOS decides, 1 = off (as batt uses it)
 
+// Mockup v4, Intel Macs: macOS has no built-in limit there, so the helper writes the SMC charge-limit key BCLM (a percent,
+// 100 = no limit; public facts from the bclm tool's README: Intel only, and the Mac charges about 3 points past it). One byte per
+// limit, cmdLimitBase + percent; 100 gives the limit back. An older helper reads these bytes as "power on" (answers O or B, never Y).
+let cmdLimitBase: UInt8 = 0x80, noLimit: UInt8 = 100
+let helperLimitMarker = "/var/db/com.johnhesch.keeper.helper.limit"  // exists exactly while a limit of ours may be on
+let limitBytes = 40...100  // the slider's 50...100, and a sailing range's bottom down to 40 (bottomRange)
+func limitCommand(_ v: Int) -> UInt8 { cmdLimitBase + UInt8(clamp5(v, limitBytes)) }
+func limitValue(_ c: UInt8) -> UInt8? { c >= cmdLimitBase + UInt8(limitBytes.lowerBound) && c <= cmdLimitBase + noLimit ? c - cmdLimitBase : nil }
+// Apple chips or Intel, as the hardware is (a copy under Rosetta still counts as an Apple chip).
+let intelMac: Bool = { var v: Int32 = 0, n = MemoryLayout<Int32>.size; return sysctlbyname("hw.optional.arm64", &v, &n, nil, 0) != 0 || v == 0 }()
+
 // Heat pause, fixed points in °F: pause above 95, start again at 91 or cooler.
 let heatPauseF = 95.0, heatResumeF = 91.0
 let heatFloor = 50  // at or under this level heat pause ends: under 80 a pause runs the Mac on its battery
@@ -41,7 +52,8 @@ func heatStep(on: Bool, tempF: Double?, level: Int, pausedAt: Int?) -> Int? {
 
 // Where charging starts again after the top was reached: the sailing range's bottom, else 5 under a limit below 80
 // (the charger switch's gap), else nowhere (80 and up, macOS's own limit does its own gap).
-func restBottom(limit: Int, sailing: Bool, bottom: Int) -> Int? { sailing ? bottom : limit < macFloor ? limit - cutBand : nil }
+// floor: the lowest limit the Mac holds by itself (macFloor; 0 on Intel, where BCLM holds any limit).
+func restBottom(limit: Int, sailing: Bool, bottom: Int, floor: Int = macFloor) -> Int? { sailing ? bottom : limit < floor ? limit - cutBand : nil }
 // Resting: the top was reached and the level has not yet come down to the bottom. shortcut: kept in memory only, so after a
 // restart it charges up to the top once before resting again.
 func nextResting(level: Int, top: Int, bottom: Int?, resting: Bool) -> Bool {
@@ -51,13 +63,13 @@ func nextResting(level: Int, top: Int, bottom: Int?, resting: Bool) -> Bool {
 
 // mac: the Mac's own limit (80...100), nil = off (charge to full once). cut: the charger's power switched off.
 struct Plan: Equatable { var mac: Int?; var cut: Bool }
-func plan(level: Int, limit: Int, bottom: Int?, resting: Bool, fullOnce: Bool, pausedAt: Int?) -> Plan {
-    var r = Plan(mac: fullOnce ? nil : max(limit, macFloor), cut: false)
+func plan(level: Int, limit: Int, bottom: Int?, resting: Bool, fullOnce: Bool, pausedAt: Int?, floor: Int = macFloor) -> Plan {
+    var r = Plan(mac: fullOnce ? nil : max(limit, floor), cut: false)
     // Resting: the Mac's limit at the bottom (on the charger the level then stays put); a bottom under 80 needs the charger
     // switch from the top down, as the Mac's own 80 would never let it lower.
-    if !fullOnce, resting, let b = bottom { r = Plan(mac: max(b, macFloor), cut: b < macFloor) }
+    if !fullOnce, resting, let b = bottom { r = Plan(mac: max(b, floor), cut: b < floor) }
     // Heat wins over everything, "Charge to full once" too: stop at the level it paused at.
-    if let p = pausedAt { r = Plan(mac: max(min(r.mac ?? 100, p), macFloor), cut: r.cut || level < macFloor) }
+    if let p = pausedAt { r = Plan(mac: max(min(r.mac ?? 100, p), floor), cut: r.cut || level < floor) }
     return r
 }
 
@@ -76,7 +88,8 @@ func aldenteRunning() -> Bool { NSWorkspace.shared.runningApplications.contains 
 protocol ChargerSwitch: AnyObject { func read() -> UInt8?; func write(_ v: UInt8) -> Bool }
 
 // The charger switch differs by firmware (batt's adapter keys): CHIE (off 0x08) on an M2 since macOS 26, CH0I or CH0J
-// (off 0x01) on Apple chips with older firmware. Intel is not covered: the app is built for Apple chips only.
+// (off 0x01) on Apple chips with older firmware. On Intel, CH0I is the force-discharge key (off 0x01; the same key in the Linux
+// and OpenBSD Apple SMC drivers), which the run down uses there.
 let chargerKeys: [(key: String, off: UInt8)] = [("CHIE", 0x08), ("CH0I", 0x01), ("CH0J", 0x01)]
 func fromChip(_ raw: UInt8, off: UInt8?) -> UInt8 { off == nil ? raw : raw == 0 ? powerOn : powerOff }  // charger keys: any non-zero byte is off (another app may use its own)
 func toChip(_ v: UInt8, off: UInt8?) -> UInt8 { off.map { v == powerOff ? $0 : v } ?? v }
@@ -110,7 +123,21 @@ final class SMCSwitch: ChargerSwitch {
     func write(_ v: UInt8) -> Bool { call(6, toChip(v, off: off)) != nil }
 }
 
+// A Mac with BCLM but no charger key: every cut is refused (an error), the limit still works.
+final class NoSwitch: ChargerSwitch { func read() -> UInt8? { nil }; func write(_ v: UInt8) -> Bool { false } }
+
 // MARK: - the helper's rules (one queue; pure apart from the switch and the marker file)
+
+// The marker goes down (and to disk, with its folder entry) before the switch, so a crash at any later point is undone at the next start.
+func writeMarker(_ path: String) -> Bool {
+    let f = open(path, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0o600)
+    guard f >= 0 else { return false }
+    let d = open((path as NSString).deletingLastPathComponent, O_RDONLY | O_CLOEXEC)  // the folder entry too, or a crash can lose the file
+    let synced = fsync(f) == 0 && d >= 0 && fsync(d) == 0
+    close(f); if d >= 0 { close(d) }
+    if !synced { unlink(path) }
+    return synced
+}
 
 final class ChargerGuard {
     let sw: ChargerSwitch, marker: String, lease: TimeInterval, floor: Int
@@ -131,13 +158,7 @@ final class ChargerGuard {
         if !ownCut {
             guard let v = sw.read() else { return replyErr }
             guard v == powerOn else { return replyBusy }  // another app switched it off: not ours to take or give back
-            // The marker goes down (and to disk) before the switch, so a crash at any later point is undone at the next start.
-            let f = open(marker, O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC, 0o600)
-            guard f >= 0 else { return replyErr }
-            let d = open((marker as NSString).deletingLastPathComponent, O_RDONLY | O_CLOEXEC)  // the folder entry too, or a crash can lose the file
-            let synced = fsync(f) == 0 && d >= 0 && fsync(d) == 0
-            close(f); if d >= 0 { close(d) }
-            guard synced else { unlink(marker); return replyErr }
+            guard writeMarker(marker) else { return replyErr }
             ownCut = true
         }
         if sw.read() == powerOff { return replyCut }  // already off; also re-done if the Mac switched it back on by itself
@@ -159,6 +180,40 @@ final class ChargerGuard {
         guard ownCut || markerExists else { return true }  // nothing of ours: never touch another app's setting
         ownCut = false; deep = false
         guard sw.write(powerOn), sw.read() == powerOn else { return false }
+        unlink(marker)
+        return true
+    }
+}
+
+// Intel's charge limit (BCLM), owned by the app's connection like a cut: given back (100) when that connection closes (quit,
+// crash, force-quit), when the app stops checking in, on a stop signal and at the helper's own start. Not before sleep: the
+// limit only stops charging, so holding it while asleep is safe, unlike a cut. A limit set by another app is never touched.
+final class LimitGuard {
+    let sw: ChargerSwitch?, marker: String, lease: TimeInterval
+    private var owner: Int32 = -1, renewed: TimeInterval = 0
+    init(_ sw: ChargerSwitch?, marker: String, lease: TimeInterval = 150) { self.sw = sw; self.marker = marker; self.lease = lease; restore() }
+    private var markerExists: Bool { access(marker, F_OK) == 0 }
+    // nil: not a limit byte.
+    func command(_ c: UInt8, fd: Int32, now: TimeInterval) -> UInt8? {
+        guard let v = limitValue(c) else { return nil }
+        guard let sw else { return replyErr }  // no BCLM key (Apple chips)
+        if v == noLimit { owner = -1; return restore() ? replyDone : replyErr }
+        if !markerExists {
+            guard let cur = sw.read() else { return replyErr }
+            guard cur == noLimit else { return replyBusy }  // another app's limit: not ours to take or give back
+            guard writeMarker(marker) else { return replyErr }
+        }
+        owner = fd; renewed = now
+        if sw.read() == v || sw.write(v) && sw.read() == v { return replyDone }
+        restore()
+        return replyErr
+    }
+    func closed(_ fd: Int32) { if fd == owner { owner = -1; restore() } }
+    func tick(now: TimeInterval) { if markerExists && (owner < 0 || now - renewed > lease) { owner = -1; restore() } }
+    // Back to no limit, if the limit is ours. Checked by reading; on failure the marker stays and the next tick tries again.
+    @discardableResult func restore() -> Bool {
+        guard markerExists, let sw else { return true }
+        guard sw.write(noLimit), sw.read() == noLimit else { return false }
         unlink(marker)
         return true
     }
@@ -218,10 +273,12 @@ private func noSigpipeCloexec(_ fd: Int32) {
 
 // Listens on `path`; only `uid` (the user) and root may talk to it. One serial queue owns the guard.
 final class HelperServer {
-    let g: ChargerGuard, q: DispatchQueue, uid: uid_t, extras: Extras
+    let g: ChargerGuard, q: DispatchQueue, uid: uid_t, extras: Extras, limits: LimitGuard?
     private var listener: DispatchSourceRead?
     private var conns: [Int32: DispatchSourceRead] = [:]  // queue only
-    init(_ g: ChargerGuard, queue: DispatchQueue, uid: uid_t, extras: Extras = Extras(led: nil, lowPower: { _ in false })) { self.g = g; q = queue; self.uid = uid; self.extras = extras }
+    init(_ g: ChargerGuard, queue: DispatchQueue, uid: uid_t, extras: Extras = Extras(led: nil, lowPower: { _ in false }), limits: LimitGuard? = nil) {
+        self.g = g; q = queue; self.uid = uid; self.extras = extras; self.limits = limits
+    }
 
     func start(path: String) -> Bool {
         let s = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -251,11 +308,12 @@ final class HelperServer {
             let n = read(c, &buf, buf.count)
             guard n > 0 else { self.conns[c]?.cancel(); return }  // closed: the app quit, crashed or was killed
             for b in buf[0..<n] {
-                var r = self.extras.command(b, fd: c) ?? self.g.command(b, fd: c, now: ProcessInfo.processInfo.systemUptime)
+                let now = ProcessInfo.processInfo.systemUptime
+                var r = self.extras.command(b, fd: c) ?? self.limits?.command(b, fd: c, now: now) ?? self.g.command(b, fd: c, now: now)
                 _ = write(c, &r, 1)
             }
         }
-        src.setCancelHandler { [weak self] in self?.g.closed(c); self?.extras.closed(c); self?.conns[c] = nil; close(c) }  // before close(): the fd number may be reused once closed
+        src.setCancelHandler { [weak self] in self?.g.closed(c); self?.extras.closed(c); self?.limits?.closed(c); self?.conns[c] = nil; close(c) }  // before close(): the fd number may be reused once closed
         conns[c] = src
         src.resume()
     }
@@ -284,20 +342,24 @@ final class FileSwitch: ChargerSwitch {
 func runHelper(_ args: [String]) -> Never {
     let fake = args[1] == "--helper-fake"
     guard args.count == 3 else { exit(2) }
-    let sw: ChargerSwitch, sock: String, marker: String, uid: uid_t, extras: Extras
+    let sw: ChargerSwitch, sock: String, marker: String, uid: uid_t, extras: Extras, bclm: ChargerSwitch?, limitMarker: String
     if fake {
         let dir = args[2]
         sw = FileSwitch(dir + "/switch"); sock = dir + "/helper.sock"; marker = dir + "/cut"; uid = getuid()
         extras = Extras(led: FileSwitch(dir + "/led"), lowPower: { on in (try? Data(on ? "1".utf8 : "0".utf8).write(to: URL(fileURLWithPath: dir + "/lowpower"))) != nil })
+        if access(dir + "/bclm", F_OK) != 0 { _ = FileSwitch(dir + "/bclm").write(noLimit) }  // a fresh Intel Mac: no limit
+        bclm = FileSwitch(dir + "/bclm"); limitMarker = dir + "/limit"
     } else {
-        guard let u = uid_t(args[2]), let s = chargerSwitch() else { exit(1) }  // launchd starts it again
-        sw = s; sock = helperSocket; marker = helperMarker; uid = u
+        bclm = SMCSwitch(key: "BCLM")  // Intel only; none on Apple chips
+        guard let u = uid_t(args[2]), let s: ChargerSwitch = chargerSwitch() ?? (bclm != nil ? NoSwitch() : nil) else { exit(1) }  // launchd starts it again
+        sw = s; sock = helperSocket; marker = helperMarker; uid = u; limitMarker = helperLimitMarker
         extras = Extras(led: SMCSwitch(key: "ACLC"), lowPower: setLowPower)  // no ACLC key (no MagSafe): the light answers an error
     }
     signal(SIGPIPE, SIG_IGN)
     let q = DispatchQueue(label: "keeper.helper")
     let g = q.sync { ChargerGuard(sw, marker: marker) }
-    let server = HelperServer(g, queue: q, uid: uid, extras: extras)
+    let limits = q.sync { LimitGuard(bclm, marker: limitMarker) }
+    let server = HelperServer(g, queue: q, uid: uid, extras: extras, limits: limits)
     guard q.sync(execute: { server.start(path: sock) }) else { exit(1) }
 
     // Before sleep: power back on (nothing watches while the Mac sleeps). Without this hook it must not run at all.
@@ -315,14 +377,14 @@ func runHelper(_ args: [String]) -> Never {
     for sig in [SIGTERM, SIGINT, SIGHUP, SIGQUIT] {  // launchd stops daemons with SIGTERM at shutdown and on removal
         signal(sig, SIG_IGN)
         let s = DispatchSource.makeSignalSource(signal: sig, queue: q)
-        s.setEventHandler { g.restore(); extras.reset(); exit(0) }
+        s.setEventHandler { g.restore(); limits.restore(); extras.reset(); exit(0) }
         s.resume()
         signalSources.append(s)
     }
     let beat = Beat()
     let t = DispatchSource.makeTimerSource(queue: q)
     t.schedule(deadline: .now() + 5, repeating: 5)
-    t.setEventHandler { beat.set(); g.tick(now: ProcessInfo.processInfo.systemUptime, level: battery().current) }
+    t.setEventHandler { beat.set(); let now = ProcessInfo.processInfo.systemUptime; g.tick(now: now, level: battery().current); limits.tick(now: now) }
     t.resume()
     // Dead man: if the queue stops answering, try power-on from a spare thread (it may hang on the same chip call), then exit
     // regardless; launchd starts a fresh helper, whose start-up restore() tries again and reads it back.
@@ -331,6 +393,7 @@ func runHelper(_ args: [String]) -> Never {
             sleep(10)
             guard beat.age > 60 else { continue }
             Thread.detachNewThread { if access(marker, F_OK) == 0, sw.write(powerOn), sw.read() == powerOn { unlink(marker) } }
+            Thread.detachNewThread { if access(limitMarker, F_OK) == 0, let b = bclm, b.write(noLimit), b.read() == noLimit { unlink(limitMarker) } }
             sleep(2)
             _exit(1)
         }
