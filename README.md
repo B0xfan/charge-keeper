@@ -5,7 +5,7 @@ limit (the private PowerUI framework), which needs no password. Under 80 (macOS 
 installed once with the Mac password (`scripts/install-helper.sh`), switches the charger's power off at the limit and back on
 5 points lower (SMC key CHIE); the Mac's own limit stays at 80 as a backstop. Without the helper, under 80 holds at 80.
 
-Author: John Hesch. Original code. Apple silicon, personal use.
+Author: John Hesch. Original code. Apple silicon.
 
 ## Safety
 
@@ -29,3 +29,7 @@ Both produce `Charge Keeper.app`, signed ad hoc. Neither installs or launches it
 
 Install (own Mac): `scripts/install.sh` copies the build into /Applications and opens it. From /Applications the app
 adds itself to Login Items once, so it starts with the Mac and cleans up any limit left by a crash or power cut.
+
+## License
+
+GPL-3.0. See [LICENSE](LICENSE). You may use, change and share it; shared versions must stay under the same license.
