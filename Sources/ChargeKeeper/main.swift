@@ -198,6 +198,29 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     c = Carry(runDown: 80); _ = step(&c, 90, plugged: false); expect(c.runDown == nil, "decide: run down ends when unplugged")
     c = Carry(runDown: 80); _ = step(&c, 80); expect(c.runDown == nil, "decide: run down ends at its level")
     c = Carry(resting: true, pausedAt: 70, lastTop: 80); _ = step(&c, nil); expect(c.resting && c.pausedAt == 70, "decide: an unreadable level changes neither state")
+    // Mockup v4: the automatic run down.
+    func auto(_ c: inout Carry, _ level: Int?, plugged: Bool? = true, sched: Int? = nil, limit: Int = 80, holding: Bool = true, macCal: Bool = false, lid: Bool = false) -> Plan {
+        decide(&c, level: level, external: plugged, tempF: nil, scheduled: sched, limit: limit, sailing: false, bottom: 75, heat: false, calibDue: false,
+               autoRunDown: true, holding: holding, macCal: macCal, lid: lid).plan
+    }
+    c = Carry(); expect(auto(&c, 94).cut && c.runDown == 80 && c.autoRun, "auto run down: starts above the limit on the charger while holding")
+    expect(auto(&c, 85).cut && c.runDown == 80 && auto(&c, 80) == Plan(mac: 80, cut: false) && c.runDown == nil && !c.autoRun, "auto run down: ends at the limit")
+    expect(!auto(&c, 80).cut && c.runDown == nil, "auto run down: at the limit nothing starts")
+    c = Carry(); _ = step(&c, 94); expect(c.runDown == nil, "auto run down: the switch off never starts it")
+    c = Carry(); expect(!auto(&c, 94, plugged: false).cut && c.runDown == nil, "auto run down: waits for the charger")
+    c = Carry(); expect(!auto(&c, 94, holding: false).cut && c.runDown == nil, "auto run down: only while Charge Keeper holds")
+    c = Carry(); expect(!auto(&c, 94, lid: true).cut && c.runDown == nil, "auto run down: never with the lid closed")
+    c = Carry(); _ = auto(&c, 94, sched: 90); expect(c.runDown == nil, "auto run down: waits while a schedule runs")
+    c = Carry(fullOnce: true); _ = auto(&c, 94); expect(c.runDown == nil && c.fullOnce, "auto run down: waits during Charge to Full Once")
+    _ = auto(&c, 100); expect(!c.fullOnce && c.runDown == 80, "auto run down: starts once Charge to Full Once is done")
+    c = Carry(calib: 3); _ = auto(&c, 94); expect(c.runDown == nil && c.calib == 3, "auto run down: waits during a calibration")
+    c = Carry(); _ = auto(&c, 94, macCal: true); expect(c.runDown == nil, "auto run down: waits while macOS charges to full on its own")
+    c = Carry(); _ = auto(&c, 70, limit: 60); expect(c.runDown == nil, "auto run down: under 80 the charger switch already brings it down")
+    c = Carry(); _ = auto(&c, 94); c.runDown = nil; c.autoHeld = true  // Stop This Time
+    expect(!auto(&c, 94).cut && !auto(&c, 80).cut && c.runDown == nil, "auto run down: Stop This Time holds it off at and above the limit")
+    _ = auto(&c, 79); expect(!c.autoHeld && auto(&c, 85).cut && c.runDown == 80, "auto run down: once under the limit again it can start again")
+    c = Carry(); _ = auto(&c, 94); _ = auto(&c, 94, plugged: false); expect(c.runDown == nil && !c.autoRun, "auto run down: unplugging ends it")
+    expect(statusText(Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80, autoRun: true)) == "On battery, down to 80%", "auto run down status")
     var r = Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)
     expect(statusText(r) == "On battery, down to 80%" && !isCharging(r), "run down status")
     r = Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)

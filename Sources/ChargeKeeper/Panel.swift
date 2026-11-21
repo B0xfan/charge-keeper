@@ -69,10 +69,15 @@ struct Panel: View {
                 Text("Keep the charger plugged in. This takes most of a day; you can use the Mac meanwhile.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button { act.cancelCalibration() } label: { Text("Cancel Calibration").frame(maxWidth: .infinity) }
             } else if let t = s.runDown {
-                Note(Text("Your Mac is running on its battery although the charger is plugged in.").bold().foregroundColor(warnText)
-                     + Text(" At \(t)% it switches back to the charger by itself. Quitting or unplugging also switches back."), cool: true)
+                if s.autoRun {  // mockup v4
+                    Note(Text("Running down by itself to your \(t)% limit.").bold().foregroundColor(coolText)
+                         + Text(" At \(t)% the Mac goes back to the charger. Unplugging or quitting also switches back."), cool: true)
+                } else {
+                    Note(Text("Your Mac is running on its battery although the charger is plugged in.").bold().foregroundColor(warnText)
+                         + Text(" At \(t)% it switches back to the charger by itself. Quitting or unplugging also switches back."), cool: true)
+                }
                 if let n = s.cutNote { cutNote(n) }
-                Button { act.stopRunDown() } label: { Text("Stop and Use the Charger").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
+                Button { act.stopRunDown() } label: { Text(s.autoRun ? "Stop This Time" : "Stop and Use the Charger").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
                 switches
             } else if let sc = s.scheduled, s.mode == .holding {
                 Note(Text("Schedule \"\(sc.name)\":").bold().foregroundColor(warnText)
@@ -262,5 +267,7 @@ struct Note: View {
     }
 }
 
+// Blue headings on the blue note (mockup v4): systemBlue on pale blue is about 3:1 in light mode; this darker one about 5:1.
+let coolText = Color(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .systemBlue : NSColor(srgbRed: 0.04, green: 0.37, blue: 0.78, alpha: 1) })
 // Orange warning headings: macOS's orange is too light on the pale orange note in light mode (about 2:1); this darker one is about 5:1.
 let warnText = Color(nsColor: NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .systemOrange : NSColor(srgbRed: 0.6, green: 0.31, blue: 0, alpha: 1) })

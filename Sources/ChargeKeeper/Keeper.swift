@@ -44,6 +44,7 @@ final class Keeper: ObservableObject {
             d.set(settings.keepOnQuit, forKey: "keepOnQuit"); d.set(settings.led.rawValue, forKey: "magsafeLight")
             d.set(settings.calibratedAt, forKey: "calibratedAt")
             d.set(settings.calibEvery, forKey: "calibEvery"); d.set(settings.calibSince, forKey: "calibSince")
+            d.set(settings.autoRunDown, forKey: "autoRunDown")
         }
     }
     private let ledLine = ChargerClient(path: helperSocket)  // kept open while the light is dark: its closing gives the light back
@@ -65,7 +66,8 @@ final class Keeper: ObservableObject {
         settings = KeeperSettings(schedules: (d.data(forKey: "schedules")).flatMap { try? JSONDecoder().decode([Schedule].self, from: $0) } ?? [],
                             keepOnQuit: d.bool(forKey: "keepOnQuit"), led: LedMode(rawValue: d.integer(forKey: "magsafeLight")) ?? .normal,
                             calibratedAt: d.object(forKey: "calibratedAt") as? Date,
-                            calibEvery: d.integer(forKey: "calibEvery"), calibSince: d.object(forKey: "calibSince") as? Date)
+                            calibEvery: d.integer(forKey: "calibEvery"), calibSince: d.object(forKey: "calibSince") as? Date,
+                            autoRunDown: d.bool(forKey: "autoRunDown"))
         // Quit with "Keep my limit" left the Mac's limit on: take it back over instead of asking as if it were someone else's.
         leftOnCheck = d.bool(forKey: "leftOn"); d.removeObject(forKey: "leftOn")
         limiter = MCL().map(Limiter.init)
@@ -109,8 +111,10 @@ final class Keeper: ObservableObject {
         skipped = skipped.filter { $0.value > now }
         let sched = activeSchedule(settings.schedules, now: now, skipped: skipped)
         let due = wasHolding && nextCalibration(months: settings.calibEvery, last: settings.calibratedAt, since: settings.calibSince).map { now >= $0 } == true
+        let macCal = macChargingToFull()
         let d = decide(&c, level: b.current, external: b.external, tempF: b.tempF, scheduled: sched.map { $0.0.limit }, limit: limit,
-                       sailing: sailOn, bottom: bottom, heat: heatOn, calibDue: due, lid: lidClosed())
+                       sailing: sailOn, bottom: bottom, heat: heatOn, calibDue: due, autoRunDown: settings.autoRunDown, holding: wasHolding,
+                       macCal: macCal, lid: lidClosed())
         if d.calibDone { settings.calibratedAt = now }
         let top = d.top, filling = d.filling, p = d.plan
         var mode = Mode.unsupported
@@ -147,18 +151,21 @@ final class Keeper: ObservableObject {
         if case .failed = mode {} else if !active { c.runDown = nil; c.calib = 0 }
         let want = wantsCut(mode: mode, level: b.current, planCut: p.cut)
         let need = want || mode == .holding && top < macFloor  // a range's bottom under 80 needs the switch only while it rests (want)
-        let note = steerCharger(need: need, want: want, deep: c.calib == 2)
+        var note = steerCharger(need: need, want: want, deep: c.calib == 2)
+        // An automatic run down the charger could not follow (no helper, AlDente, another app's cut) ends quietly; the next
+        // step tries again, so it starts once the cause is gone. Its note would wrongly talk about limits under 80.
+        if c.autoRun, !cutNow { c.runDown = nil; c.autoRun = false; note = nil }
         // An old helper cannot run the battery down that far, and with no helper the run down never starts: end the cycle.
         if note == .oldHelper || c.calib == 2 && note == .noHelper { c.calib = 0 }
         steerLight(ledDark(settings.led, plugged: b.external == true, charging: b.charging == true))
         // Only a pause that really holds: on the charger at 80 and up (the Mac's limit), or with our cut (under 80). Unplugged is not paused.
         let paused = active && c.pausedAt != nil && (cutNow || b.external == true && level >= macFloor)
         // Only above our level on the charger: once the battery is back down, the flag alone never changes the text.
-        let calibrating = mode == .holding && !cutNow && b.external == true && level > max(top, macFloor) && macChargingToFull()
+        let calibrating = mode == .holding && !cutNow && b.external == true && level > max(top, macFloor) && macCal
         let keep = settings.keepOnQuit && mode == .holding && sched == nil && p.mac == limit && limit >= macFloor && !p.cut
         let s = Snapshot(level: level, plugged: b.external ?? false, charging: b.charging ?? false, limit: top, mode: mode, mac: mac, cut: cutNow, cutNote: note,
                          heatOn: heatOn, sailing: sailOn, bottom: clampBottom(bottom, limit: top), tempF: b.tempF, paused: paused, resting: c.resting, calibrating: calibrating,
-                         runDown: c.runDown, calib: c.calib, scheduled: sched.map { Scheduled(name: $0.0.name, until: $0.1, back: limit) },
+                         runDown: c.runDown, autoRun: c.autoRun, calib: c.calib, scheduled: sched.map { Scheduled(name: $0.0.name, until: $0.1, back: limit) },
                          lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled, keepsOnQuit: keep, helperOld: helperOld, settings: settings)
         DispatchQueue.main.async {
             keepLimitOnExit = keep
@@ -252,7 +259,8 @@ final class Keeper: ObservableObject {
     }
     // Mockup v3
     func startRunDown() { work.async { self.c.fullOnce = false; self.c.calib = 0; self.c.runDown = self.c.lastTop; self.step() } }  // the limit in force, so a link never cuts a schedule's charge short
-    func stopRunDown() { work.async { self.c.runDown = nil; self.step() } }
+    // Also "Stop This Time": no automatic run down starts again until the level is under the limit.
+    func stopRunDown() { work.async { self.c.runDown = nil; self.c.autoHeld = true; self.step() } }
     // Only while holding, as the Settings button: otherwise the next step ends it at once and pushes the schedule back (a link can call this anytime).
     func startCalibration() { work.async { guard self.wasHolding, self.c.calib == 0 else { return }; self.c.runDown = nil; self.c.fullOnce = false; self.c.calib = 1; self.step() } }
     func cancelCalibration() { work.async { self.c.calib = 0; self.step() } }

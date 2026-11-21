@@ -53,6 +53,7 @@ private struct Stage: View {
         ("below80-aldente", Snapshot(level: 80, plugged: true, charging: false, limit: 60, mode: .holding, cutNote: .aldente)),
         // Mockup v3, panels 1 to 4.
         ("v3-1-above-limit", Snapshot(level: 94, plugged: true, charging: false, limit: 80, mode: .holding)),
+        ("v4-auto-running-down", Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80, autoRun: true)),
         ("v3-2-running-down", Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)),
         ("v3-3-calibrating", Snapshot(level: 41, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, calib: 2)),
         ("v3-4-schedule", Snapshot(level: 93, plugged: true, charging: true, limit: 100, mode: .holding, scheduled: Scheduled(name: "Trip", until: Date().addingTimeInterval(30 * 3600), back: 80))),

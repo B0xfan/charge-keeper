@@ -22,6 +22,7 @@ struct Snapshot: Equatable {
     var calibrating = false  // macOS has set our limit aside for a while to charge to full and re-measure the battery
     // Mockup v3
     var runDown: Int? = nil  // running on battery down to this level, charger plugged in
+    var autoRun = false  // that run down started by itself (mockup v4)
     var calib = 0  // Charge Keeper's own calibration cycle: its step 1...3, 0 = not running
     var scheduled: Scheduled? = nil  // a schedule sets the limit now (limit above is then the schedule's)
     var lowPower = false
@@ -39,6 +40,7 @@ struct KeeperSettings: Equatable {
     var calibratedAt: Date? = nil
     var calibEvery = 0  // months; 0 = no calibration schedule
     var calibSince: Date? = nil  // when the calibration schedule was set or a scheduled run was cancelled
+    var autoRunDown = false  // mockup v4: "Run down to my limit by itself"
 }
 
 enum CutNote: Equatable { case noHelper, aldente, otherApp, lidClosed, oldHelper }

@@ -73,12 +73,17 @@ struct Carry: Equatable {
     var resting = false  // see nextResting
     var pausedAt: Int? = nil  // see heatStep
     var lastTop = 0  // the limit in force at the last step (a schedule's or the slider's)
+    var autoRun = false  // the run down now going was started by itself (mockup v4)
+    var autoHeld = false  // "Stop This Time": no new automatic run down until the level is under the limit again
 }
 
 // The pure part of a step: from one battery reading, move the carried state on and work out the limit in force (top) and the plan.
 // scheduled: the running schedule's limit. calibDue: a calibration schedule is due and the last step held the limit.
+// autoRunDown: the "Run down to my limit by itself" switch; holding: the last step held the limit; macCal: macOS is charging
+// to full on its own. floor: the lowest limit the Mac holds by itself (macFloor; 0 on Intel, where the helper sets any limit).
 func decide(_ c: inout Carry, level: Int?, external: Bool?, tempF: Double?, scheduled: Int?, limit: Int, sailing: Bool, bottom: Int,
-            heat: Bool, calibDue: Bool, lid: @autoclosure () -> Bool) -> (top: Int, plan: Plan, filling: Bool, calibDone: Bool) {
+            heat: Bool, calibDue: Bool, autoRunDown: Bool = false, holding: Bool = false, macCal: Bool = false, floor: Int = macFloor,
+            lid: @autoclosure () -> Bool) -> (top: Int, plan: Plan, filling: Bool, calibDone: Bool) {
     if c.fullOnce && (level ?? 0) >= 100 { c.fullOnce = false }  // the one-off ends by itself; before the plan, which depends on it
     let top = scheduled.map(clampLimit) ?? limit
     if top != c.lastTop { c.resting = false; c.lastTop = top }  // a new top (schedule start or end): charge up to it first, as setLimit does
@@ -95,6 +100,14 @@ func decide(_ c: inout Carry, level: Int?, external: Bool?, tempF: Double?, sche
         c.resting = nextResting(level: lv, top: top, bottom: rb, resting: c.resting)
     }
     var p = plan(level: level ?? 0, limit: top, bottom: rb, resting: c.resting, fullOnce: filling, pausedAt: c.pausedAt)
+    if c.runDown == nil { c.autoRun = false }
+    if let lv = level, lv < top { c.autoHeld = false }  // "Stop This Time" lasts until the level is under the limit again
+    // The automatic run down: the Run Down button pressed by itself, above the limit in force, on the charger, while holding,
+    // with nothing else running. Not when the plan already cuts (under 80 the charger switch brings it down by itself).
+    if autoRunDown, holding, c.runDown == nil, !c.autoHeld, c.calib == 0, !c.fullOnce, scheduled == nil, !macCal, external == true,
+       !p.cut, let lv = level, lv > top, !lid() {
+        c.runDown = top; c.autoRun = true
+    }
     if c.runDown != nil || c.calib == 2 { p.cut = true }  // on battery with the charger plugged in
     return (top, p, filling, done)
 }

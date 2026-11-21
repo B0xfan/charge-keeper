@@ -61,6 +61,14 @@ struct SettingsView: View {
                             Text(loginRefused ? "macOS did not take the change. Try System Settings, General, Login Items." : login == .requiresApproval ? "Waiting for your OK in System Settings, General, Login Items." : "Opens Charge Keeper when you log in to your Mac.")
                         }
                     }
+                    Section {
+                        Toggle(isOn: Binding(get: { s.autoRunDown }, set: { v in change { $0.autoRunDown = v } })) {
+                            Text("Run down to my limit by itself")
+                            Text("When the battery is above your limit and the charger is plugged in, the Mac runs on its battery down to the limit, then goes back to the charger. Same as the \"Run Down\" button, without pressing it.")
+                        }
+                        Text("It waits while a calibration, a schedule or \"Charge to Full Once\" is running, and while the lid is closed.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     quitSection
                 case .schedules: schedulesSection
                 case .care: careSection
