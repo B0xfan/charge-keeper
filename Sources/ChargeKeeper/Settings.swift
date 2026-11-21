@@ -7,7 +7,8 @@ struct SettingsHost: View {
     @State private var login = SMAppService.mainApp.status
     @State private var loginRefused = false
     var body: some View {
-        SettingsView(s: keeper.snap.settings, health: keeper.snap.health, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
+        SettingsView(s: keeper.snap.settings, health: keeper.snap.health, switches: PanelSwitches(heat: keeper.snap.heatOn, sailing: keeper.snap.sailing, lowPower: keeper.snap.lowPower),
+                     setHeat: keeper.setHeat, setSailing: keeper.setSailing, setLowPower: keeper.setLowPower, change: keeper.update, startCalibration: keeper.startCalibration, canCalibrate: keeper.snap.mode == .holding && keeper.snap.calib == 0,
                      login: login, setLogin: { on in
                          UserDefaults.standard.set(true, forKey: "loginItemAsked")  // the user's own choice: never re-added at launch
                          try? on ? SMAppService.mainApp.register() : SMAppService.mainApp.unregister()
@@ -17,6 +18,8 @@ struct SettingsHost: View {
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in login = SMAppService.mainApp.status; loginRefused = false; keeper.refreshHealth() }  // the window is reused (onAppear runs once); System Settings may have changed it meanwhile
     }
 }
+
+struct PanelSwitches: Equatable { var heat = false, sailing = false, lowPower = false }
 
 enum SettingsTab: Hashable { case general, schedules, care, look, links }
 
@@ -45,6 +48,8 @@ func scheduleLine(_ x: Schedule) -> String {
 struct SettingsView: View {
     let s: KeeperSettings
     var health: BatteryHealth? = nil
+    var switches = PanelSwitches()  // the panel's three switches, shown in Look while hidden from the panel
+    var setHeat: (Bool) -> Void = { _ in }, setSailing: (Bool) -> Void = { _ in }, setLowPower: (Bool) -> Void = { _ in }
     var change: (@escaping (inout KeeperSettings) -> Void) -> Void = { _ in }
     var startCalibration: () -> Void = {}
     var canCalibrate = true
@@ -173,6 +178,10 @@ struct SettingsView: View {
             }
     }
 
+    private func hiddenSwitch(_ title: String, on: Bool, set: @escaping (Bool) -> Void) -> some View {
+        Toggle(title, isOn: Binding(get: { on }, set: set)).toggleStyle(.switch).controlSize(.mini).padding(.leading, 22)
+    }
+
     // One field per change, applied to the latest settings: a whole copy could undo a click made a moment before.
     private func look<T>(_ k: WritableKeyPath<Look, T>) -> Binding<T> { Binding(get: { s.look[keyPath: k] }, set: { v in change { $0.look[keyPath: k] = v } }) }
 
@@ -202,9 +211,13 @@ struct SettingsView: View {
         Section("Show in the panel") {
             Toggle("Charge to Full Once button", isOn: look(\.full)).toggleStyle(.checkbox)
             Toggle("Run Down button (when above the limit)", isOn: look(\.runDown)).toggleStyle(.checkbox)
+            // A switch hidden from the panel is changed here instead (mockup v4): it shows right under its box.
             Toggle("Heat pause switch", isOn: look(\.heat)).toggleStyle(.checkbox)
+            if !s.look.heat { hiddenSwitch("Heat pause", on: switches.heat, set: setHeat) }
             Toggle("Sailing range switch", isOn: look(\.sailing)).toggleStyle(.checkbox)
+            if !s.look.sailing { hiddenSwitch("Sailing range", on: switches.sailing, set: setSailing) }
             Toggle("Low Power Mode switch", isOn: look(\.lowPower)).toggleStyle(.checkbox)
+            if !s.look.lowPower { hiddenSwitch("Low Power Mode", on: switches.lowPower, set: setLowPower) }
             Text("Hidden ones keep working; you change them here instead. The level, the limit slider and warnings always show.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }

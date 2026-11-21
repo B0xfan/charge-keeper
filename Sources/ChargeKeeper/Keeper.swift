@@ -158,9 +158,7 @@ final class Keeper: ObservableObject {
         let want = wantsCut(mode: mode, level: b.current, planCut: p.cut)
         let need = want || mode == .holding && top < floor  // a range's bottom under 80 needs the switch only while it rests (want)
         var note = steerCharger(need: need, want: want, deep: c.calib == 2)
-        // An automatic run down the charger could not follow (no helper, AlDente, another app's cut) ends quietly; the next
-        // step tries again, so it starts once the cause is gone. Its note would wrongly talk about limits under 80.
-        if c.autoRun, !cutNow { c.runDown = nil; c.autoRun = false; note = nil }
+        if endUnfollowedAutoRun(&c, cutNow: cutNow) { note = nil }  // its note would wrongly talk about limits under 80
         // An old helper cannot run the battery down that far, and with no helper the run down never starts: end the cycle.
         if note == .oldHelper || c.calib == 2 && note == .noHelper { c.calib = 0 }
         steerLight(ledDark(settings.led, plugged: b.external == true, charging: b.charging == true))

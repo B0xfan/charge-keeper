@@ -280,6 +280,15 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     c = Carry(); _ = auto(&c, 94); expect(!auto(&c, 92, macCal: true).cut && c.runDown == nil, "auto run down: macOS charging to full ends it")
     c = Carry(); _ = auto(&c, 94); expect(auto(&c, 92, limit: 90).cut && c.runDown == 90, "auto run down: a new limit restarts it to that limit")
     c = Carry(); _ = auto(&c, 94); expect(!step(&c, 92).plan.cut && c.runDown == nil, "auto run down: switching it off ends it")
+    // The charger could not follow (Keeper's step: cutNow is the helper's answer, after cutsNow's AlDente and lid rule).
+    let noHelperCut = (nil as UInt8?) == replyCut, aldenteCut = cutsNow(want: true, aldente: true, lid: false)
+    for (cut, why) in [(noHelperCut, "no helper"), (aldenteCut, "AlDente running")] {
+        c = Carry(); _ = auto(&c, 94)
+        expect(endUnfollowedAutoRun(&c, cutNow: cut) && c.runDown == nil && !c.autoRun, "auto run down: ends quietly when the charger cannot be switched (\(why))")
+        expect(auto(&c, 94).cut && c.runDown == 80, "auto run down: tries again at the next step (\(why))")
+    }
+    c = Carry(); _ = auto(&c, 94); expect(!endUnfollowedAutoRun(&c, cutNow: true) && c.runDown == 80 && c.autoRun, "auto run down: kept while the helper holds the cut")
+    c = Carry(runDown: 80); expect(!endUnfollowedAutoRun(&c, cutNow: false) && c.runDown == 80, "a run down started by hand is not ended by this rule")
     c = Carry(runDown: 80); expect(auto(&c, 92, sched: 100).cut && c.runDown == 80, "a run down started by hand is left to the user")
     expect(statusText(Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80, autoRun: true)) == "On battery, down to 80%", "auto run down status")
     var r = Snapshot(level: 88, plugged: true, charging: false, limit: 80, mode: .holding, cut: true, runDown: 80)

@@ -80,6 +80,10 @@ private struct Stage: View {
         for (name, tab) in [("general", SettingsTab.general), ("schedules", .schedules), ("care", .care), ("look", .look), ("links", .links)] {
             ok = save(SettingsView(s: KeeperSettings(schedules: [trip, wk], calibratedAt: start.addingTimeInterval(-20 * 86_400), calibEvery: 1), health: BatteryHealth(maxPercent: 89, cycles: 190), login: .enabled, tab: tab).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-\(name)-\(tone).png") && ok
         }
+        do {  // Look with all three switches hidden from the panel: each shows under its box (the tallest Look can be)
+            var st = KeeperSettings(); st.look.heat = false; st.look.sailing = false; st.look.lowPower = false
+            ok = save(SettingsView(s: st, switches: PanelSwitches(heat: true), login: .enabled, tab: .look).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/settings-look-hidden-\(tone).png") && ok
+        }
         ok = save(ScheduleEditor(draft: trip, isNew: false, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-edit-\(tone).png") && ok
         ok = save(ScheduleEditor(draft: trip, isNew: true, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-\(tone).png") && ok
     }

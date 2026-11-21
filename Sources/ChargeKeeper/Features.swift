@@ -114,6 +114,14 @@ func decide(_ c: inout Carry, level: Int?, external: Bool?, tempF: Double?, sche
     return (top, p, filling, done)
 }
 
+// An automatic run down the charger could not follow (no helper, AlDente running, another app's cut: the helper did not
+// cut) ends quietly; the next step tries again, so it starts once the cause is gone. True when it ended one.
+func endUnfollowedAutoRun(_ c: inout Carry, cutNow: Bool) -> Bool {
+    guard c.autoRun, !cutNow else { return false }
+    c.runDown = nil; c.autoRun = false
+    return true
+}
+
 // MARK: - MagSafe light
 
 enum LedMode: Int, CaseIterable { case normal, offWhileHeld, off }
