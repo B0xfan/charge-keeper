@@ -213,7 +213,9 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     expect(linkAction(URL(string: "chargekeeper://heat/on")!) == .heat(true) && linkAction(URL(string: "chargekeeper://sailing/OFF")!) == .sailing(false)
            && linkAction(URL(string: "chargekeeper://lowpower/on")!) == .lowPower(true) && linkAction(URL(string: "chargekeeper://calibration/off")!) == .calibration(false)
            && linkAction(URL(string: "chargekeeper://heat")!) == nil && linkAction(URL(string: "chargekeeper://heat/maybe")!) == nil, "links for every switch")
+    expect(linkAction(URL(string: "chargekeeper://limit/junk/80")!) == nil && linkAction(URL(string: "chargekeeper://full/")!) == .full, "links with extra path parts are refused")
     expect(linkExamples.allSatisfy { linkAction(URL(string: $0)!) != nil }, "every link shown in Settings works")
+    expect(linkQuestion(.limit(70)) == "Change the charge limit to 70%?" && linkQuestion(.lowPower(false)) == "Turn off Low Power Mode?", "links ask first")
     // Intel (mockup v4): the limit byte, the floor of 0 (BCLM holds any limit, no charger switch), the helper's replies.
     expect(limitCommand(60) == 0x80 + 60 && limitValue(limitCommand(60)) == 60 && limitValue(limitCommand(100)) == 100 && limitCommand(62) == 0x80 + 60
            && limitValue(cmdCut) == nil && limitValue(cmdLowOn) == nil && limitValue(0x80 + 39) == nil && limitValue(0x80 + 101) == nil, "intel: limit bytes never clash with the other commands")

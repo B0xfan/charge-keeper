@@ -136,7 +136,8 @@ enum LinkAction: Equatable { case limit(Int), full, runDown, heat(Bool), sailing
 let linkExamples = ["chargekeeper://limit/80", "chargekeeper://full", "chargekeeper://rundown", "chargekeeper://heat/on",
                     "chargekeeper://sailing/on", "chargekeeper://lowpower/on", "chargekeeper://calibration/on"]
 func linkAction(_ url: URL) -> LinkAction? {
-    guard url.scheme?.lowercased() == "chargekeeper" else { return nil }
+    // At most one path part: chargekeeper://limit/junk/80 must not be read as limit/80.
+    guard url.scheme?.lowercased() == "chargekeeper", url.pathComponents.count <= 2 else { return nil }
     let arg = url.lastPathComponent.lowercased()
     let on: Bool? = arg == "on" ? true : arg == "off" ? false : nil
     switch url.host?.lowercased() {
@@ -148,5 +149,18 @@ func linkAction(_ url: URL) -> LinkAction? {
     case "lowpower": return on.map { .lowPower($0) }
     case "calibration": return on.map { .calibration($0) }
     default: return nil
+    }
+}
+// Any web page can open a link, so the app asks before doing what one says (John, 2026-11-22). Shortcuts' own actions do not ask.
+func linkQuestion(_ a: LinkAction) -> String {
+    let sw = { (name: String, on: Bool) in "\(on ? "Turn on" : "Turn off") \(name)?" }
+    switch a {
+    case .limit(let n): return "Change the charge limit to \(n)%?"
+    case .full: return "Charge to full once?"
+    case .runDown: return "Run down on battery to the limit?"
+    case .heat(let on): return sw("Heat pause", on)
+    case .sailing(let on): return sw("Sailing range", on)
+    case .lowPower(let on): return sw("Low Power Mode", on)
+    case .calibration(let on): return on ? "Start a calibration cycle? It charges full, runs down to \(calibFloor)%, then charges full again." : "Cancel the calibration cycle?"
     }
 }

@@ -234,7 +234,7 @@ struct SettingsView: View {
                 }
             }
             Section("Links") {
-                Text("The same, for scripts or a bookmark:").font(.caption).foregroundStyle(.secondary)
+                Text("The same, for scripts or a bookmark. Charge Keeper asks before doing what a link says:").font(.caption).foregroundStyle(.secondary)
                 Text(linkExamples.joined(separator: " · ")).font(.system(.caption, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
     }

@@ -54,8 +54,28 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    // chargekeeper:// links (Info.plist), for Shortcuts' "Open URLs" action, scripts or a bookmark.
-    func application(_ application: NSApplication, open urls: [URL]) { for u in urls { if let a = linkAction(u) { keeper.open(a) } } }
+    // chargekeeper:// links (Info.plist), for scripts or a bookmark. Each one asks first, so unattended automations use
+    // the Shortcuts actions (Intents.swift), which do not ask.
+    private var asking = false
+    func application(_ application: NSApplication, open urls: [URL]) {
+        // One box at a time, for the first link only: a page that fires links in a loop cannot stack boxes.
+        guard !asking, let u = urls.first(where: { linkAction($0) != nil }), let a = linkAction(u) else { return }
+        asking = true; defer { asking = false }
+        if askLink(a, u) { keeper.open(a) }
+    }
+    private func askLink(_ a: LinkAction, _ u: URL) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = linkQuestion(a)
+        let link = u.absoluteString
+        alert.informativeText = "A link asked Charge Keeper to do this:\n\(link.count > 120 ? link.prefix(120) + "…" : link)"  // a huge link must not push the buttons off screen
+        // Cancel first: it takes Return, Escape and (with Full Keyboard Access) Space, so a key typed into the page as the box appears never approves it.
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Do It")
+        let previous = NSWorkspace.shared.frontmostApplication
+        NSApp.activate(ignoringOtherApps: true)  // an accessory app's box would open behind the browser
+        defer { if NSWorkspace.shared.frontmostApplication == .current { previous?.activate() } }  // not if the user moved to another app meanwhile
+        return alert.runModal() == .alertSecondButtonReturn
+    }
 
     private var closedAt = Date.distantPast
     private let reopenGuard = 0.3  // seconds: a click this soon after a close is the same click
