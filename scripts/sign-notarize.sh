@@ -43,10 +43,11 @@ for i in {1..60}; do   # up to 30 minutes
 done
 FINAL="$OUT/notarized/Charge Keeper.app"
 codesign --verify --strict --verbose=2 "$FINAL"
-codesign -d --verbose=2 "$FINAL" 2>&1 | grep -E "Authority=Developer ID Application|flags=.*runtime"
+CD=$(codesign -d --verbose=2 "$FINAL" 2>&1); grep -E "Authority=Developer ID Application|flags=" <<<"$CD"
+grep -q "Authority=Developer ID Application: .*(LJZ32VB25F)" <<<"$CD" && grep -q "flags=.*runtime" <<<"$CD" || { echo "Not signed by John's Developer ID team with the hardened runtime"; exit 1; }
 xcrun stapler validate "$FINAL"
 SP=$(spctl -a -vvv -t exec "$FINAL" 2>&1); echo "$SP"
-grep -q "source=Notarized Developer ID" <<<"$SP" || { echo "Not accepted as a checked Developer ID app"; exit 1; }
+grep -q "source=Notarized Developer ID" <<<"$SP" && grep -q "origin=Developer ID Application: .*(LJZ32VB25F)" <<<"$SP" || { echo "Not accepted as a checked Developer ID app"; exit 1; }
 ARCHS=" $(lipo -archs "$FINAL/Contents/MacOS/ChargeKeeper") "
 [[ "$ARCHS" == *" arm64 "* && "$ARCHS" == *" x86_64 "* ]] || { echo "Not a build for both chips: $ARCHS"; exit 1; }
 [ -d "$FINAL/Contents/Resources/Metadata.appintents" ] || { echo "Shortcuts actions' metadata missing"; exit 1; }

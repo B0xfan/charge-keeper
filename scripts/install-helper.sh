@@ -57,7 +57,8 @@ if [[ -e "$STAGE/helper" ]]; then
     "$STAGE/helper" --selftest >/dev/null || { echo "The helper copy failed its self-test; nothing installed."; exit 1; }
 fi
 SRC=($STAGE/${^FILES})
-ROOT="D=\$(mktemp -d /var/root/ck.XXXXXX) && cd \$D && cp ${SRC[*]} . && { shasum -a 256 $FILES | shasum -a 256 | grep -q ^$SUM || { echo Files changed while waiting for the password, nothing installed. >&2; false; }; } && /bin/zsh root.sh; r=\$?; cd /; rm -rf \$D; exit \$r"
+# zsh -f: root must not read startup files (.zshenv) from the user's home.
+ROOT="D=\$(mktemp -d /var/root/ck.XXXXXX) && cd \$D && cp ${SRC[*]} . && { shasum -a 256 $FILES | shasum -a 256 | grep -q ^$SUM || { echo Files changed while waiting for the password, nothing installed. >&2; false; }; } && /bin/zsh -f root.sh; r=\$?; cd /; rm -rf \$D; exit \$r"
 osascript -e "do shell script \"$ROOT\" with prompt \"$PROMPT\" with administrator privileges"
 if [[ "${1:-}" == "--remove" ]]; then echo "Helper removed."; exit 0; fi
 for _ in {1..10}; do [[ -S /var/run/$LABEL.sock ]] && break; sleep 1; done
