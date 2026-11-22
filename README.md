@@ -15,7 +15,7 @@
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="GPL-3.0 license"></a>
 </p>
 
-<p align="center"><a href="https://github.com/B0xfan/charge-keeper/releases/latest"><b>Download the latest version</b></a><br>Signed and checked by Apple. Unzip it, then drag it into Applications.</p>
+<p align="center"><a href="https://github.com/B0xfan/charge-keeper/releases/latest"><b>Download the latest version</b></a><br>Signed and checked by Apple. Open the .dmg file, then drag Charge Keeper into Applications.</p>
 
 ## Why
 

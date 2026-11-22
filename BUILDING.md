@@ -42,7 +42,7 @@ Both run `scripts/make-app.sh`, which builds for Apple chips and Intel and makes
 `Charge Keeper.app`, signed ad hoc with the hardened runtime. Neither installs or launches it.
 
 Developer ID and Apple's check: `scripts/sign-notarize.sh <cloud ChargeKeeper.zip>` (owner's Mac only) signs, notarizes and
-staples it into `build/Charge Keeper.app`.
+staples it into `build/Charge Keeper.app`, then `scripts/make-dmg.sh` makes the checked `build/release/ChargeKeeper-<version>.dmg` for the release.
 
 Install (own Mac): `scripts/install.sh` copies the build into /Applications and opens it. From /Applications the app
 adds itself to Login Items once, so it starts with the Mac and cleans up any limit left by a crash or power cut.

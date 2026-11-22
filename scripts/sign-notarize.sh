@@ -54,3 +54,4 @@ taskpolicy -b nice -n 19 "$FINAL/Contents/MacOS/ChargeKeeper" --selftest  # pure
 rm -rf "build/Charge Keeper.app"; ditto "$FINAL" "build/Charge Keeper.app"
 ditto -c -k --keepParent "build/Charge Keeper.app" "$OUT/ChargeKeeper-$VER.zip"
 echo "Checked: build/Charge Keeper.app and $OUT/ChargeKeeper-$VER.zip (version $VER, build $N)"
+scripts/make-dmg.sh "build/Charge Keeper.app" "$VER"  # the disk image for the GitHub release
