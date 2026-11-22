@@ -21,6 +21,8 @@ let markerURL = FileManager.default.urls(for: .applicationSupportDirectory, in: 
 // A slider move is not that (cur is still our old level); just after a wake a change is ours to set back (sleep may reset it).
 // Called only after `cur == want` was ruled out.
 func changedOutside(cur: LimitState, held: LimitState?, reassert: Bool) -> Bool { !reassert && held != nil && cur != held }
+// macOS has no "on at 100": setting 100 switches its limit off (seen 2026-11-22), so a 100% limit is held as "off at 100".
+func wantedState(_ target: Int) -> LimitState { LimitState(enabled: target < 100, limit: target) }
 func raiseNeedsReset(cur: LimitState, target: Int) -> Bool { cur.enabled && target > cur.limit }
 
 final class Limiter: ChargeLimit {
@@ -52,7 +54,7 @@ final class Limiter: ChargeLimit {
         guard m.supported else { return .unsupported }
         if orig == nil { clearLeftoverLocked() }
         guard let cur = m.state() else { return .failed("Could not read the Mac's charge limit.") }
-        let want = LimitState(enabled: true, limit: target)
+        let want = wantedState(target)
         if orig == nil {
             guard !cur.enabled || adopt else { return .foreign }  // the Mac's own limit (or another app's) is on: only the user's choice takes it over
             // Taken over or not, giving it back means charging back to normal, as the Quit button says.
@@ -68,7 +70,7 @@ final class Limiter: ChargeLimit {
         // Raising a limit that is on keeps macOS in "limit reached" (it never charges back up), so switch it off first.
         if raiseNeedsReset(cur: cur, target: target) { m.disable() }
         guard m.setLimit(target) else { return fail("macOS refused the limit \(target)%") }
-        if m.enabled() != true { m.enable() }  // setting the level may already switch it on
+        if want.enabled != m.enabled() { if want.enabled { m.enable() } else { m.disable() } }  // setting the level may already switch it on (or, at 100, off)
         guard m.state() == want else { return fail("macOS did not keep the limit \(target)%") }
         held = want
         return .ok

@@ -339,6 +339,7 @@ func selftest() -> Int32 {
     expect(changedOutside(cur: LimitState(enabled: false, limit: 85), held: on85, reassert: false), "turned off outside: clash")
     expect(raiseNeedsReset(cur: LimitState(enabled: true, limit: 80), target: 85), "raising a limit that is on (sailing off): off first, or it never charges")
     expect(!raiseNeedsReset(cur: on85, target: 80) && !raiseNeedsReset(cur: LimitState(enabled: false, limit: 100), target: 85), "lowering, or a limit that is off: no reset")
+    expect(wantedState(100) == LimitState(enabled: false, limit: 100) && wantedState(85) == on85, "a 100% limit (a Sunday schedule) is held as off at 100, which is what macOS keeps")
     expect(!changedOutside(cur: LimitState(enabled: false, limit: 85), held: on85, reassert: true), "turned off just after wake: set back, not a clash")
     expect(shouldRegisterLoginItem(path: "/Applications/Charge Keeper.app", asked: false), "login item: installed copy, first time")
     expect(wantsCut(mode: .holding, level: 70, planCut: true) && wantsCut(mode: .fullOnce, level: 70, planCut: true), "cut: holding asks for it")
