@@ -1,48 +1,120 @@
-# Charge Keeper
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.gif">
+  <img src="docs/images/hero-light.gif" width="800" alt="Charge Keeper in the menu bar holding the battery at 80%">
+</picture>
+</p>
 
-A menu-bar app that stops a MacBook charging at a level you choose. From 80 to 100 it uses the Mac's own built-in charge
-limit (the private PowerUI framework), which needs no password. Under 80 (macOS refuses its own limit there) a small helper,
-installed once with the Mac password (`scripts/install-helper.sh`), switches the charger's power off at the limit and back on
-5 points lower (SMC key CHIE); the Mac's own limit stays at 80 as a backstop. Without the helper, under 80 holds at 80.
+<h1 align="center">Charge Keeper</h1>
 
-Intel Macs have no built-in limit, so there every limit goes through the helper: it writes the SMC charge-limit key BCLM
-(100 = no limit) and runs the battery down with the force-discharge key CH0I. The Intel path is covered by self-tests only;
-it has not been run on an Intel Mac.
+<p align="center"><b>Stop your MacBook charging at the level you choose.</b><br>A small menu bar app. Free and open source.</p>
 
-Also: an automatic run down to the limit, actions for the Shortcuts app (App Intents), a choice of menu-bar icon and panel
-items, and the battery health macOS reports.
+<p align="center">
+<a href="https://github.com/B0xfan/charge-keeper/releases/latest"><img src="https://img.shields.io/github/v/release/B0xfan/charge-keeper?label=release" alt="Latest release"></a>
+<img src="https://img.shields.io/badge/macOS-14%2B-blue" alt="macOS 14 or later">
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="GPL-3.0 license"></a>
+</p>
 
-Author: John Hesch. Original code. Apple silicon and Intel.
+<p align="center"><a href="https://github.com/B0xfan/charge-keeper/releases/latest"><b>Download the latest version</b></a><br>Signed and checked by Apple. Unzip it, then drag it into Applications.</p>
 
-## Safety
+## Why
 
-The limit is always put back: on Quit and on every catchable signal; a small watchdog (a second copy of the program)
-covers a crash or kill -9; at start-up a leftover note from an earlier run triggers a clean-up. A limit the app did
-not set (for example Apple's own) is never touched.
+A laptop battery wears out faster when it sits at 100% all day on the charger. Keeping it lower, around 80%, slows that wear. Charge Keeper holds the battery at your level and lets you go to full whenever you need it.
 
-The charger helper puts power back on when the app's connection closes (quit, crash, force-quit), when the app stops
-checking in, before sleep, when it starts (boot, or after it died; launchd restarts it), on a stop signal, at a 40% floor,
-and from a dead-man thread. On Intel it gives its BCLM limit back the same way (connection closed, check-ins stopped, stop signal, its own start), but
-not before sleep, since a limit only stops charging. It never touches a cut or limit it did not make, and Charge Keeper does not switch the charger while
-AlDente runs or while the lid is closed. `--helper-fake <folder>` runs the real helper on a file instead of the chip, for tests.
+**Already know AlDente?** Charge Keeper is free, with every feature included and no subscription. It is open source, so anyone can read exactly what it does.
 
-## Flags
+## What it does
 
-`--helper <uid>` is the charger helper (root, started by launchd). `--restore` puts the limit back to off / 100. `--probe` reads only. `--selftest` runs the logic checks. `--render <folder>` draws the panel and icon to PNG files off-screen (no window).
+<table>
+<tr><td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/sailing-dark.png">
+  <img src="docs/images/sailing-light.png" width="400" alt="The panel with Sailing range on">
+</picture>
+</td><td>
 
-## Building
+### Charge up to any level
+Pick a limit from 50% to 100% with one slider in the menu bar. Need the whole battery for a trip? **Charge to Full Once** fills it, then goes back to your limit.
 
-Cloud: `scripts/cloud-build.sh` (GitHub Actions, manual trigger only). Local, niced, one job: `scripts/local-build.sh`.
-Both run `scripts/make-app.sh`, which builds for Apple chips and Intel and makes the Shortcuts actions' metadata
-(`Metadata.appintents`, from Apple's `appintentsmetadataprocessor`; plain `swift build` does not make it). The result is
-`Charge Keeper.app`, signed ad hoc with the hardened runtime. Neither installs or launches it.
+### Sailing range
+Lets the battery drift down a little, for example to 75%, before it charges again, so it is not topped up all the time.
 
-Developer ID and Apple's check: `scripts/sign-notarize.sh <cloud ChargeKeeper.zip>` (owner's Mac only) signs, notarizes and
-staples it into `build/Charge Keeper.app`.
+### Heat pause
+Stops charging while the battery is warm.
 
-Install (own Mac): `scripts/install.sh` copies the build into /Applications and opens it. From /Applications the app
-adds itself to Login Items once, so it starts with the Mac and cleans up any limit left by a crash or power cut.
+</td></tr>
+<tr><td>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/schedules-dark.gif">
+  <img src="docs/images/schedules-light.gif" width="400" alt="Adding a Trip schedule that charges to 100%">
+</picture>
+</td><td>
+
+### Schedules
+Set a different limit for set times, once or on repeat. A Trip schedule can charge to 100% the night before you leave and turn itself off when it ends.
+
+</td></tr>
+<tr><td>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/calibration-dark.gif">
+  <img src="docs/images/calibration-light.gif" width="400" alt="Running a calibration cycle from Battery Care">
+</picture>
+</td><td>
+
+### Battery care
+See the battery health macOS reports: maximum capacity, condition and charge cycles. Run a calibration cycle to keep the battery reading honest, and turn the MagSafe light off while the battery waits at the limit.
+
+</td></tr>
+<tr><td>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/look-dark.png">
+  <img src="docs/images/look-light.png" width="400" alt="Look settings">
+</picture>
+</td><td>
+
+### Make it yours
+Four menu bar icons to choose from, a charging animation you can turn off, and a panel that shows only the switches you use.
+
+</td></tr>
+</table>
+
+### Also
+
+- **Run down to your limit.** Above the limit, the Mac runs on battery until it gets there.
+- **Low Power Mode** switch right in the panel.
+- **Shortcuts actions:** Set Charge Limit, Charge to Full Once, Go Back to My Limit, Run Down to My Limit, Turn Heat Pause On or Off, Turn Sailing Range On or Off, Get Battery Status.
+- Starts with your Mac.
+
+## Safe by design
+
+- **Private.** No account, no tracking, and it never goes online.
+- Quit the app and charging turns back on. The same happens after a crash, a force quit or a power cut.
+- It never changes a limit it did not set, such as Apple's own.
+- It steps aside while AlDente runs and while the lid is closed.
+
+## How it works
+
+From 80% to 100% Charge Keeper uses the Mac's own built-in charge limit, with no password. Below 80%, macOS has no limit of its own, so a small helper installed once with your Mac password switches the charger off at the limit and back on a little lower. Without the helper, a limit under 80% holds at 80%.
+
+### Removing the helper
+
+The helper comes out cleanly. Paste this into Terminal and enter your Mac password:
+
+```
+"/Applications/Charge Keeper.app/Contents/Resources/install-helper.sh" --remove
+```
+
+It switches charging back on first, then deletes the helper and its start-up file. No part of the helper is left on the Mac.
+
+## Requirements
+
+- A MacBook with macOS 14 Sonoma or later.
+- Apple silicon. Intel Macs are supported in the code but have not yet been tried on a real Intel Mac.
+
+## For developers
+
+Build, test and signing steps, and the details of how the limit and the helper work, are in [BUILDING.md](BUILDING.md).
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE). You may use, change and share it; shared versions must stay under the same license.
+GPL-3.0. See [LICENSE](LICENSE). You may use, change and share it; shared versions keep the same license. Made by John Hesch.
