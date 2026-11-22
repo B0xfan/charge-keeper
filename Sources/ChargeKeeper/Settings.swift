@@ -15,7 +15,7 @@ struct SettingsHost: View {
                          login = SMAppService.mainApp.status
                          loginRefused = on ? !(login == .enabled || login == .requiresApproval) : login == .enabled  // waiting for approval is not a refusal
                      }, loginRefused: loginRefused)
-            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in login = SMAppService.mainApp.status; loginRefused = false; keeper.refreshHealth() }  // the window is reused (onAppear runs once); System Settings may have changed it meanwhile
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { n in guard (n.object as? NSWindow)?.identifier == settingsID else { return }; login = SMAppService.mainApp.status; loginRefused = false; keeper.refreshHealth() }  // the window is reused (onAppear runs once); System Settings may have changed it meanwhile
     }
 }
 
@@ -26,7 +26,7 @@ enum SettingsTab: Hashable { case general, schedules, care, look, links }
 func limitText(_ v: Int) -> String { "\(v)%" }
 func iconStyleName(_ s: IconStyle) -> String {
     switch s {
-    case .numberInBattery: return "Number in battery (today)"
+    case .numberInBattery: return "Number in battery"
     case .battery: return "Battery only"
     case .batteryAndNumber: return "Battery and number"
     case .number: return "Number only"
@@ -197,7 +197,7 @@ struct SettingsView: View {
                     Button { change { $0.look.icon = style } } label: {
                         VStack(spacing: 6) {
                             Image(nsImage: makeIcon(style, level: 80)).renderingMode(.template).frame(height: 15)
-                            Text(iconStyleName(style)).font(.caption).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                            Text(iconStyleName(style)).font(.caption).multilineTextAlignment(.center).lineLimit(2, reservesSpace: true)  // every card two lines tall, so the icons line up
                         }
                         .frame(maxWidth: .infinity, minHeight: 56).padding(.vertical, 6).contentShape(Rectangle())
                         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
@@ -281,8 +281,9 @@ struct ScheduleEditor: View {
             }
             DatePicker("From", selection: $draft.from, displayedComponents: parts)
             DatePicker("Until", selection: $draft.until, displayedComponents: parts)
-            Text(kind == .once ? "A Once schedule turns itself off when it ends." : "An end time before the start time runs past midnight.")
-                .font(.caption).foregroundStyle(.secondary)
+            let backwards = kind == .once && draft.until <= draft.from
+            Text(backwards ? "Until must be after From." : kind == .once ? "A Once schedule turns itself off when it ends." : "An end time before the start time runs past midnight.")
+                .font(.caption).foregroundStyle(backwards ? AnyShapeStyle(warnText) : AnyShapeStyle(.secondary))
             HStack {
                 if !isNew { Button("Delete", role: .destructive) { askDelete = true }
                     .confirmationDialog("Delete \"\(draft.name)\"?", isPresented: $askDelete) { Button("Delete", role: .destructive) { delete(draft.id) } } }
@@ -294,7 +295,7 @@ struct ScheduleEditor: View {
                     save(d)
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(kind == .once && draft.until <= draft.from)
+                .disabled(backwards)
             }
             } header: { Text(isNew ? "New Schedule" : "Edit Schedule").font(.headline) }
         }

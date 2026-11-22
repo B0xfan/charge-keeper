@@ -39,11 +39,12 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
 
     // Mockup v3: one Settings window, made on first use and reused.
     private var settingsWindow: NSWindow?
-    func openSettings() {
+    @objc func openSettings() {
         popover.performClose(nil)
         if settingsWindow == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsHost(keeper: keeper)))
             w.title = "Charge Keeper Settings"
+            w.identifier = settingsID
             w.styleMask = [.titled, .closable]  // fixed size: every section fits
             w.isReleasedWhenClosed = false
             w.center()  // first time only: later it reopens where the user left it
@@ -75,11 +76,13 @@ final class StatusController: NSObject, NSApplicationDelegate, NSPopoverDelegate
     func popoverDidClose(_ notification: Notification) { keeper.panel(open: false) }
 }
 
-// Never shown (accessory app), but its key equivalents make Cmd-C/V/X/A/Z work in text fields and Cmd-W close Settings.
+let settingsID = NSUserInterfaceItemIdentifier("settings")
+
+// Never shown (accessory app), but its key equivalents make Cmd-C/V/X/A/Z work in text fields, Cmd-W close Settings, Cmd-, open it and Cmd-Q quit (while the panel or Settings is active).
 private func keyMenu() -> NSMenu {
     let main = NSMenu()
     for (title, items) in [("Edit", [("Undo", "undo:", "z"), ("Redo", "redo:", "Z"), ("Cut", "cut:", "x"), ("Copy", "copy:", "c"), ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")]),
-                           ("Window", [("Close", "performClose:", "w")])] {
+                           ("Window", [("Close", "performClose:", "w")]), ("Charge Keeper", [("Settings…", "openSettings", ","), ("Quit Charge Keeper", "terminate:", "q")])] {
         let m = NSMenu(title: title)
         for (t, a, k) in items { m.addItem(withTitle: t, action: Selector(a), keyEquivalent: k) }
         main.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = m

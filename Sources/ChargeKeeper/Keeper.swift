@@ -173,7 +173,7 @@ final class Keeper: ObservableObject {
                          lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled, keepsOnQuit: keep, helperOld: helperOld, settings: settings, health: health)
         DispatchQueue.main.async {
             keepLimitOnExit = keep
-            self.snap = s
+            if self.snap != s { self.snap = s }
             let before = self.anim
             self.refreshAnimation()
             if self.anim == before { self.onIcon() }  // a changed anim has already redrawn the icon (its didSet)

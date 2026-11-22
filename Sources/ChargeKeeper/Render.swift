@@ -86,6 +86,7 @@ private struct Stage: View {
         }
         ok = save(ScheduleEditor(draft: trip, isNew: false, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-edit-\(tone).png") && ok
         ok = save(ScheduleEditor(draft: trip, isNew: true, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-\(tone).png") && ok
+        ok = save(ScheduleEditor(draft: Schedule(name: "Trip", limit: 100, from: start, until: start.addingTimeInterval(-3600)), isNew: true, save: { _ in }, delete: { _ in }, cancel: {}).environment(\.colorScheme, dark ? .dark : .light).background(Color(nsColor: .windowBackgroundColor)), dark: dark, scale: 2, to: "\(dir)/schedule-backwards-\(tone).png") && ok
     }
     // The icon alone, drawn 8 times larger (scale 2 = real size on a retina screen), in the colour the menu bar would give it (black on light, white on dark).
     for dark in [false, true] {

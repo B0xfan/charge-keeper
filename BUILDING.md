@@ -32,7 +32,7 @@ AlDente runs or while the lid is closed. `--helper-fake <folder>` runs the real 
 
 ## Flags
 
-`--helper <uid>` is the charger helper (root, started by launchd). `--restore` puts the limit back to off / 100. `--probe` reads only. `--selftest` runs the logic checks. `--render <folder>` draws the panel and icon to PNG files off-screen (no window).
+`--helper <uid>` is the charger helper (root, started by launchd). `--restore` puts the limit back to off / 100. `--probe` reads only. `--selftest` runs the logic checks. `--render <folder>` draws the panel and icon to PNG files off-screen (no window). `--help` prints the flags; `--version` the app's version (from the bundle, so `?` for a bare `swift build`).
 
 ## Building
 

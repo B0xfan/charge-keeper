@@ -298,6 +298,7 @@ func featureSelftest(_ expect: (Bool, String) -> Void) {
     expect(statusText(Snapshot(level: 94, plugged: true, charging: false, limit: 80, mode: .holding)) == "Above 80%, not charging", "above the limit on the charger")
     // Battery health (mockup v4). John's M2 on 2026-11-21: 4045 / 4563 mAh, System Settings says 89%.
     let m2: [String: Any] = ["MaxCapacity": 100, "CycleCount": 190, "BatteryData": ["AppleRawMaxCapacity": 4045, "FullChargeCapacity": 4045, "DesignCapacity": 4563, "NominalChargeCapacity": 4172]]
+    expect(levelPercent(current: 85, max: 100) == 85 && levelPercent(current: 3400, max: 4000) == 85 && levelPercent(current: nil, max: 4000) == nil && levelPercent(current: 4100, max: 4000) == 100, "level: a percent on Apple chips, mAh over mAh on Intel")
     expect(healthPercent(m2) == 89, "health: Apple chip, from BatteryData, rounded as System Settings (not NominalChargeCapacity)")
     expect(healthPercent(["MaxCapacity": 100, "BatteryData": ["FullChargeCapacity": 4045, "DesignCapacity": 4563]]) == 89, "health: FullChargeCapacity when the raw key is missing")
     expect(healthPercent(["MaxCapacity": 5103, "DesignCapacity": 5800, "AppleRawMaxCapacity": 5103]) == 88 && healthPercent(["MaxCapacity": 5103, "DesignCapacity": 5800]) == 88, "health: Intel, mAh at the top level")
@@ -424,6 +425,7 @@ func selftest() -> Int32 {
 }
 
 let args = CommandLine.arguments
+let usage = "Usage: ChargeKeeper (no arguments) | --selftest | --probe | --restore | --render <folder> | --helper <uid> | --version | --help"
 switch args.dropFirst().first {
 case "--watchdog": runWatchdog(args)
 case "--helper", "--helper-fake": runHelper(args)
@@ -444,6 +446,10 @@ case "--probe":
     print("battery: level=\(bt.current.map(String.init) ?? "?") temperature=\(bt.tempF.map(degrees) ?? "?")")
     let h = readHealth()
     print("health: max capacity=\(h.maxPercent.map { "\($0)%" } ?? "?") cycles=\(h.cycles.map(String.init) ?? "?") service=\(h.service)")
+case "--help", "-h":
+    print(usage); exit(0)
+case "--version":
+    print("Charge Keeper \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")"); exit(0)
 case "--restore":
     guard let m = MCL() else { print("PowerUI client could not be created"); exit(2) }
     let ok = restore(m, LimitState(enabled: false, limit: 100))
@@ -456,9 +462,9 @@ default:
     // -ApplePersistenceIgnoreState, ... added by macOS, open or a debugger) are ignored. The lock is the check: a copy started
     // from a terminal is not always listed as a running app yet. O_CLOEXEC: the watchdog must not inherit it and hold it after the app dies.
     func leave(_ why: String, _ code: Int32) -> Never { FileHandle.standardError.write(Data("Charge Keeper: \(why)\n".utf8)); exit(code) }
-    let known: Set = ["-watchdog", "-selftest", "-render", "-probe", "-restore", "-helper", "-helper-fake"]  // single-dash typos of our own flags
+    let known: Set = ["-watchdog", "-selftest", "-render", "-probe", "-restore", "-helper", "-helper-fake", "-help", "-version"]  // single-dash typos of our own flags
     if let bad = args.dropFirst().first(where: { $0.hasPrefix("--") || known.contains($0) }) {
-        leave("unknown option \(bad). Usage: ChargeKeeper (no arguments) | --selftest | --probe | --restore | --render <folder> | --helper <uid>", 2)
+        leave("unknown option \(bad). \(usage)", 2)
     }
     let lockDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Charge Keeper")
     try? FileManager.default.createDirectory(at: lockDir, withIntermediateDirectories: true)

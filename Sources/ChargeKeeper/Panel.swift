@@ -197,8 +197,9 @@ struct Setting: View {
                 Text(title).bold()
                 Text(hint).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            .accessibilityHidden(true)  // VoiceOver reads both on the switch, once
             Spacer(minLength: 0)
-            Toggle(title, isOn: Binding(get: { on }, set: set)).toggleStyle(.switch).controlSize(.mini).labelsHidden()
+            Toggle(title, isOn: Binding(get: { on }, set: set)).toggleStyle(.switch).controlSize(.mini).labelsHidden().accessibilityHint(hint)
         }
     }
 }

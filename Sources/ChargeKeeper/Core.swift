@@ -94,7 +94,13 @@ func battery() -> Battery {
     guard svc != 0 else { return Battery() }
     defer { IOObjectRelease(svc) }
     func p(_ k: String) -> NSNumber? { IORegistryEntryCreateCFProperty(svc, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber }
-    return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: p("CurrentCapacity")?.intValue, tempF: fahrenheit(centiC: batteryTempCentiC(svc)))  // CurrentCapacity is a percent on Apple silicon (MaxCapacity reads 100)
+    return Battery(charging: p("IsCharging")?.boolValue, external: p("ExternalConnected")?.boolValue, current: levelPercent(current: p("CurrentCapacity")?.intValue, max: p("MaxCapacity")?.intValue), tempF: fahrenheit(centiC: batteryTempCentiC(svc)))
+}
+// Apple silicon: CurrentCapacity is a percent (MaxCapacity reads 100). Intel: both are mAh, so the level is their ratio.
+func levelPercent(current: Int?, max: Int?) -> Int? {
+    guard let c = current else { return nil }
+    guard let m = max, m > 100 else { return c }
+    return min(100, Int((Double(c) * 100 / Double(m)).rounded()))
 }
 
 // MARK: - battery health (mockup v4, what System Settings > Battery > Battery Health shows)
